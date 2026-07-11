@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HL Terminal</title>
+<link rel="stylesheet" href="style.css">
+<script src="https://unpkg.com/lightweight-charts@4.2.3/dist/lightweight-charts.standalone.production.js"></script>
+<script src="metamask-sdk.bundle.js"></script>
+</head>
+<body>
+<header id="topbar">
+  <span id="logo">HL</span>
+  <select id="coin-select" title="銘柄"></select>
+  <nav id="intervals">
+    <button data-iv="1m">1m</button>
+    <button data-iv="5m" class="active">5m</button>
+    <button data-iv="15m">15m</button>
+    <button data-iv="1h">1h</button>
+    <button data-iv="4h">4h</button>
+    <button data-iv="1d">1d</button>
+  </nav>
+  <div id="stats">
+    <div class="stat"><span class="label">Mark</span><span id="st-mark" class="value">–</span></div>
+    <div class="stat"><span class="label">24h</span><span id="st-change" class="value">–</span></div>
+    <div class="stat"><span class="label">Funding/h</span><span id="st-funding" class="value">–</span></div>
+    <div class="stat"><span class="label">OI</span><span id="st-oi" class="value">–</span></div>
+    <div class="stat"><span class="label">24h Vol</span><span id="st-vol" class="value">–</span></div>
+  </div>
+  <button id="wallet-btn">Connect</button>
+  <span id="conn" class="down" title="WebSocket 接続状態">●</span>
+</header>
+
+<main>
+  <section id="chart-pane">
+    <div id="chart"></div>
+  </section>
+  <aside id="side">
+    <section id="book-pane">
+      <h2>Order Book</h2>
+      <div class="book-head"><span>Price</span><span>Size</span><span>Total</span></div>
+      <div id="asks"></div>
+      <div id="spread"><span id="spread-val">–</span></div>
+      <div id="bids"></div>
+    </section>
+    <section id="trades-pane">
+      <h2>Trades</h2>
+      <div class="book-head"><span>Price</span><span>Size</span><span>Time</span></div>
+      <div id="trades"></div>
+    </section>
+  </aside>
+</main>
+
+<footer id="account" hidden>
+  <div id="acct-summary">
+    <div class="stat"><span class="label">Equity</span><span id="ac-equity" class="value">–</span></div>
+    <div class="stat"><span class="label">Withdrawable</span><span id="ac-withdraw" class="value">–</span></div>
+    <div class="stat"><span class="label">Margin Used</span><span id="ac-margin" class="value">–</span></div>
+    <div class="stat"><span class="label">uPnL</span><span id="ac-upnl" class="value">–</span></div>
+  </div>
+  <div id="acct-tables">
+    <section>
+      <h2>Positions</h2>
+      <table id="positions">
+        <thead><tr><th>Coin</th><th>Size</th><th>Entry</th><th>Mark</th><th>uPnL (ROE)</th><th>Liq. Px</th><th>Margin</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </section>
+    <section>
+      <h2>Open Orders</h2>
+      <table id="orders">
+        <thead><tr><th>Coin</th><th>Side</th><th>Price</th><th>Size</th><th></th><th>Time</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </section>
+  </div>
+</footer>
+
+<div id="connect-modal" hidden>
+  <div id="connect-box">
+    <button id="cm-close" title="閉じる">×</button>
+    <h3>ウォレット接続</h3>
+    <div id="cm-menu">
+      <button id="cm-mm">MetaMask で接続</button>
+      <button id="cm-watch">アドレスを入力（ウォッチ）</button>
+    </div>
+    <p id="cm-note">拡張が無い場合は QR が表示されます。スマホの MetaMask でスキャンして承認してください。</p>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

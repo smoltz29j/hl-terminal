@@ -1,0 +1,5 @@
+# MetaMask SDK は再配布不可ライセンスのため、バンドルは各自 ./build-sdk.sh で生成する
+metamask-sdk.bundle.js
+.sdk-build/
+node_modules/
+.claude/
