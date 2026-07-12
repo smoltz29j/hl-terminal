@@ -3,3 +3,4 @@ metamask-sdk.bundle.js
 .sdk-build/
 node_modules/
 .claude/
+IMG_*.jpeg

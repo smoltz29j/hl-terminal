@@ -14,6 +14,9 @@
 
 * { box-sizing: border-box; }
 
+/* display を明示指定した要素でも hidden 属性を必ず効かせる（過去バグの再発防止） */
+[hidden] { display: none !important; }
+
 html, body {
   margin: 0;
   height: 100%;
@@ -48,8 +51,8 @@ body { display: flex; flex-direction: column; }
   font-weight: 600;
 }
 
-#intervals { display: flex; gap: 2px; }
-#intervals button {
+#intervals, #indicators { display: flex; gap: 2px; }
+#intervals button, #indicators button {
   background: none;
   border: none;
   color: var(--muted);
@@ -58,8 +61,30 @@ body { display: flex; flex-direction: column; }
   cursor: pointer;
   font: inherit;
 }
-#intervals button:hover { background: var(--surface-2); color: var(--ink-2); }
-#intervals button.active { background: var(--surface-2); color: var(--ink); font-weight: 600; }
+#intervals button:hover, #indicators button:hover { background: var(--surface-2); color: var(--ink-2); }
+#intervals button.active, #indicators button.active { background: var(--surface-2); color: var(--ink); font-weight: 600; }
+
+#indicators { border-left: 1px solid var(--hairline); padding-left: 8px; }
+
+#net-badge {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  padding: 2px 7px;
+  border-radius: 5px;
+}
+#net-badge.net-testnet { color: #c98500; border: 1px solid #c98500; }
+#net-badge.net-custom  { color: #3987e5; border: 1px solid #3987e5; }
+
+#settings-btn {
+  background: none;
+  color: var(--muted);
+  border: none;
+  font-size: 16px;
+  cursor: pointer;
+  padding: 2px 4px;
+}
+#settings-btn:hover { color: var(--ink); }
 
 #stats { display: flex; gap: 18px; margin-left: auto; }
 .stat { display: flex; flex-direction: column; align-items: flex-end; }
@@ -85,17 +110,95 @@ body { display: flex; flex-direction: column; }
 #conn.down { color: var(--sell); }
 
 /* ---------- layout ---------- */
+/* 公式風レイアウト: 右の板・約定は縦いっぱい、Positions/Open Orders はチャート下のみ */
 main {
   flex: 1;
   display: grid;
   grid-template-columns: 1fr 320px;
+  grid-template-rows: 1fr auto;
+  grid-template-areas:
+    "chart side"
+    "account side";
   min-height: 0;
 }
+/* アカウント表示中は チャート+ボリューム:ポジション = 2:1 で分割 */
+main:has(#account:not([hidden])) { grid-template-rows: 2fr 1fr; }
 
-#chart-pane { position: relative; min-width: 0; }
-#chart { position: absolute; inset: 0; }
+#chart-pane {
+  grid-area: chart;
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+#chart { flex: 3; min-height: 0; }
+#vol-chart { flex: 1; min-height: 0; border-top: 1px solid var(--hairline); }
+
+#chart-legend {
+  position: absolute;
+  top: 8px;
+  left: 10px;
+  z-index: 3;
+  display: flex;
+  gap: 12px;
+  padding: 3px 8px;
+  background: rgba(13, 13, 13, 0.7);
+  border-radius: 6px;
+  font-size: 11px;
+  color: var(--ink-2);
+  pointer-events: none;
+}
+.lg-item { display: inline-flex; align-items: center; gap: 5px; }
+.lg-swatch { width: 10px; height: 2px; display: inline-block; }
+
+/* 急落先取りのパターン監視バッジ（凡例の下） */
+#tl-watch {
+  position: absolute;
+  top: 34px;
+  left: 10px;
+  z-index: 3;
+  padding: 3px 8px;
+  background: rgba(13, 13, 13, 0.7);
+  border-radius: 6px;
+  border-left: 3px solid var(--ink-2);
+  font-size: 11px;
+  color: var(--ink-2);
+  pointer-events: none;
+}
+#tl-watch.watch-hot { border-left-color: #c98500; color: #c98500; }
+#tl-watch.watch-break { border-left-color: #e66767; color: #e66767; }
+
+/* 総合急落警報バナー（局面×パターン×実需の合議） */
+#crash-alert {
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 4;
+  padding: 6px 16px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  pointer-events: none;
+}
+#crash-alert.alert-2 {
+  background: rgba(201, 133, 0, 0.15);
+  border: 1px solid #c98500;
+  color: #c98500;
+}
+#crash-alert.alert-3 {
+  background: rgba(230, 103, 103, 0.18);
+  border: 1px solid #e66767;
+  color: #e66767;
+  animation: alert-pulse 1.6s ease-in-out infinite;
+}
+@keyframes alert-pulse {
+  50% { opacity: 0.45; }
+}
 
 #side {
+  grid-area: side;
   display: flex;
   flex-direction: column;
   border-left: 1px solid var(--hairline);
@@ -112,6 +215,98 @@ main {
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
+
+/* ---------- trade pane ---------- */
+#trade-pane { padding: 0 12px 10px; border-bottom: 1px solid var(--hairline); }
+#trade-pane h2 { padding-left: 0; padding-right: 0; }
+
+.tf-segs { display: flex; gap: 8px; margin-bottom: 8px; }
+.seg {
+  flex: 1;
+  display: flex;
+  background: var(--surface-2);
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.seg button {
+  flex: 1;
+  background: none;
+  border: none;
+  color: var(--muted);
+  padding: 6px 0;
+  font: inherit;
+  cursor: pointer;
+}
+#tf-side button.active[data-side="buy"]  { background: var(--buy-wash); color: var(--buy); font-weight: 600; }
+#tf-side button.active[data-side="sell"] { background: var(--sell-wash); color: var(--sell); font-weight: 600; }
+#tf-type button.active { background: var(--surface); color: var(--ink); font-weight: 600; }
+
+.tf-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+.tf-row > span:first-child { color: var(--muted); font-size: 11px; width: 30px; }
+.tf-row input {
+  flex: 1;
+  min-width: 0;
+  background: var(--surface-2);
+  color: var(--ink);
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+}
+.tf-row input:focus { outline: none; border-color: var(--muted); }
+.tf-row input:disabled { color: var(--muted); }
+.tf-unit { color: var(--muted); font-size: 11px; min-width: 34px; }
+
+.tf-foot {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin: 8px 0;
+  color: var(--ink-2);
+  font-size: 11px;
+}
+#tf-ro-row { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); cursor: pointer; }
+#tf-notional { font-variant-numeric: tabular-nums; }
+
+#tf-submit {
+  width: 100%;
+  border: none;
+  border-radius: 6px;
+  padding: 8px 0;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+  color: #fff;
+}
+#tf-submit.buy  { background: var(--buy); }
+#tf-submit.sell { background: var(--sell); }
+#tf-submit:disabled { opacity: 0.5; cursor: default; }
+
+#trade-gate p { color: var(--muted); font-size: 11px; line-height: 1.6; margin: 4px 0 8px; }
+#tg-btn {
+  width: 100%;
+  background: var(--surface-2);
+  color: var(--ink);
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  padding: 8px 0;
+  font: inherit;
+  cursor: pointer;
+}
+#tg-btn:hover { border-color: var(--muted); }
+#tg-btn:disabled { color: var(--muted); cursor: default; }
+
+#tf-status { font-size: 11px; line-height: 1.5; margin-top: 6px; color: var(--muted); word-break: break-all; }
+#tf-status.ok  { color: var(--buy); }
+#tf-status.err { color: var(--sell); }
+#tf-status:empty { display: none; }
 
 #book-pane   { flex: 1.3; display: flex; flex-direction: column; min-height: 0; }
 #trades-pane { flex: 1; display: flex; flex-direction: column; min-height: 0; border-top: 1px solid var(--hairline); }
@@ -155,6 +350,56 @@ main {
   font-variant-numeric: tabular-nums;
 }
 #spread .label { color: var(--muted); margin-right: 6px; }
+
+/* ---------- settings modal ---------- */
+#settings-modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10;
+}
+#settings-box {
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+  padding: 20px 22px;
+  width: 420px;
+  max-width: calc(100vw - 32px);
+}
+#settings-box h3 { margin: 0 0 12px; font-size: 15px; }
+.sm-opt {
+  display: block;
+  padding: 6px 0;
+  cursor: pointer;
+}
+.sm-opt .sm-url { color: var(--muted); font-size: 11px; margin-left: 8px; }
+#sm-custom { margin: 4px 0 0 22px; display: flex; flex-direction: column; gap: 6px; }
+#sm-custom input[type="text"] {
+  background: var(--surface-2);
+  color: var(--ink);
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font: inherit;
+  font-size: 12px;
+}
+#sm-custom-net { color: var(--ink-2); font-size: 12px; display: inline-flex; align-items: center; gap: 5px; }
+.sm-note { color: var(--muted); font-size: 11px; line-height: 1.6; margin: 12px 0; }
+.sm-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.sm-actions button {
+  background: var(--surface-2);
+  color: var(--ink);
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  padding: 7px 14px;
+  font: inherit;
+  cursor: pointer;
+}
+.sm-actions button:hover { border-color: var(--muted); }
+#sm-save { font-weight: 600; }
 
 /* ---------- connect modal ---------- */
 #connect-modal[hidden] { display: none; }
@@ -205,9 +450,10 @@ main {
 
 /* ---------- account panel ---------- */
 #account {
+  grid-area: account;
   border-top: 1px solid var(--hairline);
   background: var(--surface);
-  max-height: 260px;
+  min-height: 0;
   overflow-y: auto;
 }
 
@@ -267,9 +513,29 @@ main {
   margin-left: 4px;
 }
 
+button.cxl, button.mod, button.close-pos {
+  background: none;
+  border: 1px solid var(--hairline);
+  border-radius: 4px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1;
+  padding: 2px 5px;
+  cursor: pointer;
+}
+button.cxl:hover, button.close-pos:hover { color: var(--sell); border-color: var(--sell); }
+button.mod:hover { color: var(--ink); border-color: var(--muted); }
+button.cxl, button.mod, button.close-pos { white-space: nowrap; }
+
 @media (max-width: 900px) {
-  main { grid-template-columns: 1fr; grid-template-rows: 55vh auto; }
+  main {
+    grid-template-columns: 1fr;
+    grid-template-rows: 55vh auto auto;
+    grid-template-areas: "chart" "account" "side";
+  }
+  main:has(#account:not([hidden])) { grid-template-rows: 55vh auto auto; }
   #side { border-left: none; border-top: 1px solid var(--hairline); }
   #book-pane, #trades-pane { min-height: 300px; }
+  #account { max-height: 45vh; }
   #acct-tables { grid-template-columns: 1fr; }
 }
