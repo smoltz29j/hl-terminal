@@ -14,6 +14,8 @@ Hyperliquid の独自フロントエンド「HL Terminal」。リアルタイム
 
 elwhite (192.168.101.201) 上で動かし、LAN のブラウザから `http://192.168.101.201:8010/` で開く想定。ビルド・テスト・lint は無し。ufw は 8010/tcp を 192.168.101.0/24 に対して許可済み（2026-07-11）。
 
+本番は systemd ユーザーユニット `hl-terminal.service`（`~/.config/systemd/user/`、Restart=always・linger 有効）で常駐。再起動は `systemctl --user restart hl-terminal`。run.sh は手元試験用。実需フィードの `btc-demand.service`（port 8765、crypto_analysis）も同様にユニット化済み。
+
 ## アーキテクチャ
 
 - フロントは `index.html` / `style.css` / `app.js`（相場・アカウント・設定）/ `hl-sign.js`（署名）/ `trade.js`（発注 UI）+ `metamask-sdk.bundle.js`（後述のビルド成果物）。全て classic script で、app.js のトップレベル変数（`state`・`NET` 等）を後続の trade.js が直接参照する（読み込み順を変えないこと）。
