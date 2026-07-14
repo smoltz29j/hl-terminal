@@ -19,14 +19,23 @@ if (window.self !== window.top) document.documentElement.classList.add("framed")
 </script>
 <!-- ?v= はキャッシュバスター。style.css / app.js / hl-sign.js / trade.js を変更したら
      ここの4箇所 + duo.html の style.css?v= も合わせて数字を上げる -->
-<link rel="stylesheet" href="style.css?v=10">
+<link rel="stylesheet" href="style.css?v=13">
 <script src="https://unpkg.com/lightweight-charts@4.2.3/dist/lightweight-charts.standalone.production.js"></script>
 <script src="https://unpkg.com/ethers@6.15.0/dist/ethers.umd.min.js"></script>
 <script src="metamask-sdk.bundle.js"></script>
 </head>
 <body>
-<header id="topbar">
+<!-- 1段目: ウォレット接続・画面切替・設定（2画面時は duo.html 側の共有バーに一本化され、行ごと非表示） -->
+<header id="topbar-acct">
   <span id="logo">HL</span>
+  <button id="wallet-btn">Connect</button>
+  <button id="split-btn" hidden></button>
+  <button id="settings-btn" title="API 接続先の設定">⚙</button>
+</header>
+<!-- 2段目: サブティッカー（スマホではマーキー、PC は固定表示） -->
+<div id="ticker" hidden></div>
+<!-- 3段目: 銘柄・足・指標・ステータス -->
+<header id="topbar">
   <span id="coin-picker">
     <input id="coin-filter" title="銘柄の絞り込み" placeholder="検索" autocomplete="off" autocapitalize="characters" spellcheck="false" enterkeyhint="go">
     <select id="coin-select" title="銘柄"></select>
@@ -52,12 +61,8 @@ if (window.self !== window.top) document.documentElement.classList.add("framed")
     <div class="stat"><span class="label">OI</span><span id="st-oi" class="value">–</span></div>
     <div class="stat"><span class="label">24h Vol</span><span id="st-vol" class="value">–</span></div>
   </div>
-  <button id="wallet-btn">Connect</button>
-  <button id="split-btn" hidden></button>
-  <button id="settings-btn" title="API 接続先の設定">⚙</button>
   <span id="conn" class="down" title="WebSocket 接続状態">●</span>
 </header>
-<div id="ticker" hidden></div>
 
 <main>
   <section id="chart-pane">
@@ -178,8 +183,8 @@ if (window.self !== window.top) document.documentElement.classList.add("framed")
   </div>
 </div>
 
-<script src="app.js?v=10"></script>
-<script src="hl-sign.js?v=10"></script>
-<script src="trade.js?v=10"></script>
+<script src="app.js?v=13"></script>
+<script src="hl-sign.js?v=13"></script>
+<script src="trade.js?v=13"></script>
 </body>
 </html>

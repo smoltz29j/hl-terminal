@@ -134,20 +134,33 @@ body { display: flex; flex-direction: column; }
 #conn.up   { color: var(--buy); }
 #conn.down { color: var(--sell); }
 
-/* ---------- sub ticker（xyz DEX 銘柄の常時表示） ---------- */
-#ticker {
+/* ---------- 1段目: ウォレット接続・画面切替・設定 ---------- */
+#topbar-acct {
   display: flex;
-  gap: 22px;
-  padding: 3px 14px;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 14px;
   background: var(--surface);
   border-bottom: 1px solid var(--hairline);
-  font-size: 12px;
-  flex-wrap: wrap;
 }
+#topbar-acct #wallet-btn { margin-left: auto; }
+
+/* ---------- sub ticker（xyz DEX 銘柄の常時表示） ---------- */
+/* renderTicker が .tk-wrap > .tk-track ×2 を生成する（2本目はマーキーのループ用。PC では非表示） */
+#ticker {
+  padding: 4px 14px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--hairline);
+  font-size: 15px;
+  overflow: hidden;
+}
+.tk-wrap { display: flex; }
+.tk-track { display: flex; gap: 22px; flex-wrap: wrap; }
+.tk-track + .tk-track { display: none; }
 .tk-item { display: flex; gap: 7px; align-items: baseline; }
 .tk-label { color: var(--muted); }
 .tk-px { font-variant-numeric: tabular-nums; }
-.tk-chg { font-variant-numeric: tabular-nums; font-size: 11px; }
+.tk-chg { font-variant-numeric: tabular-nums; font-size: 13px; }
 
 /* ---------- layout ---------- */
 /* 公式風レイアウト: 右の板・約定は縦いっぱい、Positions/Open Orders はチャート下のみ */
@@ -612,9 +625,34 @@ html.framed #side { border-left: 1px solid var(--hairline); border-top: none; }
 html.framed #book-pane, html.framed #trades-pane { min-height: 0; }
 html.framed #account { max-height: none; overflow-y: auto; }
 
+@keyframes tk-scroll {
+  from { transform: translateX(0); }
+  to   { transform: translateX(-50%); }
+}
+
 @media (max-width: 900px) {
   /* 1画面に押し込まず、ページ全体を縦スクロールさせる（account が潰れる問題の対策） */
   html, body { height: auto; min-height: 100%; }
+
+  /* ---- スマホは全体的にフォントを一回り大きく ---- */
+  html, body { font-size: 15px; }                    /* 板・約定・テーブル等の継承分 13→15 */
+  #ticker { font-size: 17px; }
+  .tk-chg { font-size: 15px; }
+  .stat .label { font-size: 11.5px; }
+  #account th, .book-head { font-size: 11.5px; }
+  #side h2, #acct-tables h2, #trade-pane h2 { font-size: 12.5px; }
+  .tf-row > span:first-child, .tf-unit, .tf-lev-label,
+  #tg-msg, #tf-status, #trade-gate p { font-size: 12.5px; }
+  .tag { font-size: 10.5px; }
+  /* テーブル内の操作ボタンはタップしやすく */
+  button.cxl, button.mod, button.close-pos { font-size: 12px; padding: 4px 8px; }
+  /* 入力欄は 16px 以上に（iOS Safari のフォーカス時自動ズームを防ぐ） */
+  #coin-filter, #coin-select, .tf-row input, #tf-lev { font-size: 16px; }
+  /* ティッカーは右から左へ流れるマーキー（PC は固定表示のまま）。
+     .tk-wrap 全体を -50% 動かすと同一内容の track 2本がシームレスにループする */
+  #ticker .tk-wrap { width: max-content; animation: tk-scroll 22s linear infinite; }
+  #ticker .tk-track { flex-wrap: nowrap; padding-right: 22px; }
+  #ticker .tk-track + .tk-track { display: flex; }
   main {
     grid-template-columns: 1fr;
     grid-template-rows: 55vh auto auto;

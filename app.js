@@ -1037,16 +1037,29 @@ function renderTicker() {
   const el = (FRAMED && window.top.document.getElementById("ticker")) || $("ticker");
   el.hidden = !items.length;
   if (!items.length) return;
-  el.innerHTML = items.map((t) => {
-    const c = tickerCtxs[t.coin];
-    const mark = Number(c.markPx);
-    const prev = Number(c.prevDayPx);
-    const chg = prev ? ((mark - prev) / prev) * 100 : 0;
-    const cls = chg >= 0 ? "up" : "down";
-    return `<span class="tk-item" title="${t.coin} (mark / 24h)"><span class="tk-label">${t.label}</span>` +
-      `<span class="tk-px">${fmtAnyPx(mark)}</span>` +
-      `<span class="tk-chg value ${cls}">${(chg >= 0 ? "+" : "") + chg.toFixed(2)}%</span></span>`;
-  }).join("");
+  // 構造は初回（と銘柄数の変化時）のみ生成。毎回 innerHTML を作り直すとスマホの
+  // マーキーアニメーションが巻き戻るため、以後は数値のテキストだけ差し替える。
+  // track を2連にするのはマーキーのシームレスループ用（PC では2本目を CSS で非表示）
+  if (el.dataset.count !== String(items.length)) {
+    const cell = (t) =>
+      `<span class="tk-item" title="${t.coin} (mark / 24h)"><span class="tk-label">${t.label}</span>` +
+      `<span class="tk-px"></span><span class="tk-chg value"></span></span>`;
+    const track = `<span class="tk-track">${items.map(cell).join("")}</span>`;
+    el.innerHTML = `<span class="tk-wrap">${track}${track}</span>`;
+    el.dataset.count = String(items.length);
+  }
+  for (const track of el.querySelectorAll(".tk-track")) {
+    track.querySelectorAll(".tk-item").forEach((node, i) => {
+      const c = tickerCtxs[items[i].coin];
+      const mark = Number(c.markPx);
+      const prev = Number(c.prevDayPx);
+      const chg = prev ? ((mark - prev) / prev) * 100 : 0;
+      node.querySelector(".tk-px").textContent = fmtAnyPx(mark);
+      const chgEl = node.querySelector(".tk-chg");
+      chgEl.textContent = (chg >= 0 ? "+" : "") + chg.toFixed(2) + "%";
+      chgEl.className = "tk-chg value " + (chg >= 0 ? "up" : "down");
+    });
+  }
 }
 
 async function loadTicker() {
@@ -1344,9 +1357,9 @@ $("wallet-btn").addEventListener("click", () => {
   else openModal();
 });
 // 2画面時のウォレット/設定ボタンは duo.html 最上段の共有コントロールに一本化
-// （クリックは左ペインへ委譲される）。ペイン内の重複ボタンは隠す。
+// （クリックは左ペインへ委譲される）。ペイン内は1段目（#topbar-acct）ごと隠す。
 // 右ペインの Trade 欄からの接続は引き続き可能で、その場合も左に伝播する
-if (FRAMED) $("wallet-btn").hidden = $("settings-btn").hidden = $("logo").hidden = true;
+if (FRAMED) $("topbar-acct").hidden = true;
 $("cm-close").addEventListener("click", closeModal);
 $("connect-modal").addEventListener("click", (e) => { if (e.target.id === "connect-modal") closeModal(); });
 $("cm-mm").addEventListener("click", connectMetaMask);
