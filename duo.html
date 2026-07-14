@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HL Terminal ×2</title>
+<link rel="icon" href="data:,">
+<!-- style.css を link し、#topbar / #wallet-btn / #split-btn / #settings-btn / #ticker の
+     id を本体とあえて同じにして見た目を共有する（別ドキュメントなので id 重複にはならない） -->
+<link rel="stylesheet" href="style.css?v=10">
+<style>
+  html, body { height: 100%; }
+  #wrap { flex: 1; display: flex; min-height: 0; }
+  #wrap iframe { flex: 1; min-width: 0; border: 0; }
+  #wrap iframe + iframe { border-left: 2px solid var(--hairline); }
+  #logo { margin-right: auto; }
+</style>
+</head>
+<body>
+<!-- 2画面シェル。1段目 = 共有コントロール、2段目 = 共通ティッカー（左ペインの app.js が描画）、
+     3段目 = 完全独立な index.html ×2（WS・チャート・発注とも別系統。localStorage は共有）。
+     ボタン操作は左ペインへ委譲するため、接続/設定モーダルは左ペイン内に開く -->
+<header id="topbar">
+  <span id="logo">HL</span>
+  <button id="wallet-btn">Connect</button>
+  <button id="split-btn" title="1画面表示に戻す">1画面</button>
+  <button id="settings-btn" title="API 接続先の設定">⚙</button>
+</header>
+<div id="ticker" hidden></div>
+<div id="wrap"></div>
+<script>
+// 自分への ?user= 等のクエリを各ペインへ引き継ぐ
+const q = new URLSearchParams(location.search);
+q.delete("pane");
+const rest = q.toString() ? "&" + q.toString() : "";
+for (const p of [1, 2]) {
+  const f = document.createElement("iframe");
+  f.src = `index.html?pane=${p}${rest}`;
+  f.title = p === 1 ? "左ペイン" : "右ペイン";
+  document.getElementById("wrap").appendChild(f);
+}
+
+const pane1 = () => document.querySelector("#wrap iframe")?.contentWindow;
+
+// ウォレット: 接続状態の表示は各ペインの setUser がこのボタンへ書き込む。
+// クリックは左ペインの接続/切断へ委譲（接続は setUser のブロードキャストで両ペインに伝播）。
+// 注意: ペインの `state` はトップレベル const のため window 越しに見えない —
+// 接続中かどうかはこのボタン自身の connected クラス（setUser が付与）で判定する
+document.getElementById("wallet-btn").addEventListener("click", (e) => {
+  const w = pane1();
+  if (!w) return;
+  if (e.currentTarget.classList.contains("connected")) w.disconnectWallet?.();
+  else w.openModal?.();
+});
+
+document.getElementById("split-btn").addEventListener("click", () => {
+  localStorage.setItem("hlt-view", "single");
+  location.href = "index.html";
+});
+
+document.getElementById("settings-btn").addEventListener("click", () => pane1()?.openSettings?.());
+</script>
+</body>
+</html>

@@ -24,7 +24,10 @@ elwhite (192.168.101.201) 上で動かし、LAN のブラウザから `http://19
 - データ源は2系統（キー不要・CORS 許可済み）:
   - REST `POST /info` — 初期データ。`metaAndAssetCtxs`（銘柄一覧+出来高ソート。**元 index が発注用 asset id** → `state.assetIds`）、`candleSnapshot`（ローソク足の初期300本）。
   - WebSocket `wss://…/ws` — リアルタイム。`l2Book` / `trades` / `candle` / `activeAssetCtx` を購読。銘柄・足切替時は unsubscribe→REST 再取得→subscribe（`switchTo()`）。45秒毎に ping、切断時は指数バックオフで再接続。
-- **API 接続先切替**: localStorage `hlt-api`（⚙ボタンの設定モーダル）。公式 Mainnet / 公式 Testnet / カスタム URL（mainnet/testnet フラグ付き — 署名の `hyperliquidChain` と phantom agent の source 判定に使う）。切替は `location.reload()` で全状態を作り直す。非デフォルト時は topbar に TESTNET/CUSTOM バッジ表示。
+- **サブティッカー（#ticker）**: HIP-3 xyz DEX 銘柄の mark/24h% を常時表示（現構成: WTIOIL=`xyz:CL`・GOLD・Nasdaq100=`xyz:XYZ100`・MU・SPCX。表示名は info `perpConciseAnnotations` の displayName ベースだが Nasdaq100 はユーザー指定の呼称。API 名と別なので注意）。初期値は REST `metaAndAssetCtxs`+`dex:"xyz"`、以後は WS `activeAssetCtx` の常時購読（`switchTo()` の unsubscribe 対象外 — ただしティッカー無効ペインでは通常購読に戻す `TICKER_ON` 分岐あり）。xyz DEX の無い接続先（testnet 等）では自動非表示。銘柄は app.js の `TICKER_COINS`。1画面では topbar 直下、2画面では duo.html 最上段（左ペインが `window.top.document` の #ticker へ描画）。
+- **銘柄セレクタ**: 検索欄（#coin-filter）+ ネイティブ `<select>` の併用。入力でプルダウンの option を絞り込み（前方一致優先、部分一致は銘柄名のみ）、Enter で先頭候補に切替。既定 DEX に加え **HIP-3 builder DEX 全銘柄**（perpDexs 列挙 → dex 別 metaAndAssetCtxs）を出来高順で統合し、表示名は displayName+"(dex)"。**builder DEX 銘柄は `state.assetIds` に未登録 = 発注・レバレッジ変更は意図的にブロック**（asset id が別採番 100000+dexIndex*10000+i で実サーバー未検証のため。有効化するなら /exchange のエラー応答の復元アドレス法で検証してから）。
+- **2画面モード（duo.html）**: PC（>900px）は既定で duo.html へリダイレクト（index.html 冒頭のインラインスクリプト。「1画面」選択で localStorage `hlt-view`=single）。duo.html は index.html?pane=1/2 を iframe で左右に並べるだけで、各ペインは WS・チャート・発注まで完全独立。共有要素: ウォレット接続（setUser のペイン間ブロードキャスト）・最上段ティッカー・API 設定（storage イベントで他ペイン追従 reload）。ペイン内は `html.framed` で幅に依らずデスクトップ型レイアウト（右カラム 260px）。銘柄はペイン別に `hlt-coin:pN` へ記憶。急落警報の音/通知は pane=2 を消音。
+- **API 接続先切替**: localStorage `hlt-api`（⚙ボタンの設定モーダル）。公式 Mainnet / 公式 Testnet / **プリセット代替 `api-ui.hyperliquid.xyz`・`api2.hyperliquid.xyz`**（公式運営の別レートリミットプール。REST+CORS+WS 動作確認 2026-07-14）/ カスタム URL（Chainstack 等キー付きサードパーティ用。mainnet/testnet フラグ付き — 署名の `hyperliquidChain` と phantom agent の source 判定に使う）。切替は `location.reload()` で全状態を作り直す。非デフォルト時は topbar に TESTNET/API-UI/API2/CUSTOM バッジ表示。
 - **チャート指標**: MA(20)=黄 `#c98500`・MA(50)=青 `#3987e5`・BB(20,2σ)=マゼンタ `#d55181`（3色相互の CVD 分離を dataviz validator で検証済み）。`state.candles` から計算し、WS の candle 更新では最終点のみ `series.update()`。トグルは localStorage `hlt-ind`。
 - **自動トレンドチャネル（TL トグル）**: 各区間に終値の回帰直線 ± 高値/安値へのオフセットの平行線を描画。上下限は片側4%のバーのはみ出しを許容する分位点（極端なヒゲで幅が水増しされない）。区間検出は3層構成:
   - **長期** = トップダウン分割。全期間を「チャネル幅 ≤ 平均価格の22%（`TL_COHERENT_FRAC`）で一貫」になるまで最良分割点（子チャネル幅の最大値が最小になる点を全候補走査）で再帰分割し、隣接リーフは一貫性を保つ限り再統合。**ピボットに依らないため数ヶ月のレンジ帯が一組の平行線にまとまる**（幅の相対比較ではレンジ統合と急落分離が両立できないことを実データで確認済み — 絶対基準が本質）。境界は後処理で2段階調整: ①±20本の範囲で「幅×長さ」合計が最小になる位置へ局所最適化（幅のみのコストは片側を極小化する退化があり不可）、②傾きが下向きに変わる境界は近傍±10本の局所高値へ・上向きは局所安値へスナップ（人間が境界を天井/大底に置く感覚。2026-01 の持ち合い上限 1/14 で実例検証済み）、③境界調整で一貫性を失った区間は再分割してから最終統合（例: 2026-01 は「天井→踊り場→滝」の構造で、踊り場は持ち合い側に統合され 1/28→2/6 の滝が独立チャネルになる — ユーザー指定の区切りと一致することを検証済み）。
@@ -53,4 +56,6 @@ elwhite (192.168.101.201) 上で動かし、LAN のブラウザから `http://19
 
 - スマホ MetaMask（QR セッション）経由の `eth_signTypedData_v4` 実機承認は未検証（署名データ形式は SDK 互換を確認済み）。
 - testnet での実約定テストにはユーザーの testnet 入金が必要（faucet: app.hyperliquid-testnet.xyz、mainnet 残高のあるアドレスが条件）。
-- レバレッジ変更（`updateLeverage`）・TP/SL（trigger 注文）・cloid は未実装。
+- TP/SL（trigger 注文）・cloid は未実装。レバレッジ変更（`updateLeverage`、Cross/Isolated 切替付き）は実装済み — 現在値は info `activeAssetData`、action のキー順は type,asset,isCross,leverage（署名バイト互換は復元アドレス法で検証済み 2026-07-14）。
+- builder DEX 銘柄（xyz: 等）の発注・レバレッジ変更は asset id 未検証のため無効化中（上記セレクタ項参照）。
+- **JS/CSS を変更したら index.html の `?v=` 4箇所 + duo.html の style.css?v= を上げること**（キャッシュバスター。iPhone Safari が古い JS を使い回す実害があった）。

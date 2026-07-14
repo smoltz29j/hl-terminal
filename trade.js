@@ -14,6 +14,7 @@ const trade = {
   type: "limit",   // "limit" | "market"
   agent: null,     // ethers.Wallet（承認済み agent 鍵）
   busy: false,
+  levCross: true,  // レバレッジ変更 UI のマージンモード（true=Cross）
 };
 
 function agentStoreKey(user) {
@@ -103,6 +104,7 @@ async function enableTrading() {
     tradeStatus("取引を有効化しました", "ok");
     renderTradePane();
     refreshAccount();
+    refreshLeverage();
   } catch (e) {
     console.error("approveAgent:", e);
     tradeStatus(errMsg(e), "err");
@@ -296,6 +298,68 @@ async function closePosition(coin) {
 }
 
 // agent 鍵が失効/未承認になっていたら破棄して再有効化を促す
+// ---------- レバレッジ変更（updateLeverage） ----------
+
+// 現在値を activeAssetData から取得して UI へ反映。銘柄切替・接続直後に呼ぶ。
+// 非対応銘柄（builder DEX 等 asset id 未登録）では行ごと隠す
+async function refreshLeverage() {
+  const row = $("tf-lev-row");
+  const coin = state.coin;
+  const asset = state.assetIds[coin];
+  if (!tradeReady() || asset == null) { row.hidden = true; return; }
+  row.hidden = false;
+  $("tf-lev-max").textContent = `x（最大 ${state.maxLev[coin] ?? "?"}）`;
+  try {
+    const d = await info({ type: "activeAssetData", user: state.user, coin });
+    if (state.coin !== coin) return; // 取得中に銘柄が切り替わったら破棄
+    $("tf-lev").value = String(d.leverage?.value ?? "");
+    setMarginMode(d.leverage?.type !== "isolated");
+  } catch (e) {
+    console.error("activeAssetData:", e);
+  }
+}
+
+function setMarginMode(isCross) {
+  trade.levCross = isCross;
+  document.querySelector("#tf-margin .active")?.classList.remove("active");
+  document.querySelector(`#tf-margin button[data-mode="${isCross ? "cross" : "isolated"}"]`)?.classList.add("active");
+}
+
+async function setLeverage() {
+  if (trade.busy || !tradeReady()) return;
+  const coin = state.coin;
+  const asset = state.assetIds[coin];
+  const btn = $("tf-lev-set");
+  try {
+    if (asset == null) throw new Error("この銘柄はレバレッジ変更に未対応です");
+    const max = state.maxLev[coin] ?? 1;
+    const lev = Math.round(parsePositive($("tf-lev").value, "レバレッジ"));
+    if (lev < 1 || lev > max) throw new Error(`レバレッジは 1〜${max} の整数で指定してください`);
+    const modeTxt = trade.levCross ? "Cross" : "Isolated";
+    if (NET.isMainnet && !confirm(`【Mainnet】${coin} のレバレッジを ${lev}x（${modeTxt}）に変更します。\nポジションがある場合は必要証拠金・清算価格が変わります。よろしいですか？`)) return;
+
+    trade.busy = true;
+    btn.disabled = true;
+    tradeStatus("レバレッジ変更中…");
+    // msgpack はキー順序がハッシュに影響する。Python SDK update_leverage と同じ
+    // type, asset, isCross, leverage の順を崩さないこと
+    const action = { type: "updateLeverage", asset, isCross: trade.levCross, leverage: lev };
+    const nonce = Date.now();
+    const sig = await HLSign.signL1Action(trade.agent, action, null, nonce, NET.isMainnet);
+    await exchangePost(action, sig, nonce);
+    tradeStatus(`${coin} のレバレッジを ${lev}x（${modeTxt}）に変更しました`, "ok");
+    refreshAccount();
+    refreshLeverage();
+  } catch (e) {
+    console.error("updateLeverage:", e);
+    handleAgentError(e);
+    tradeStatus(errMsg(e), "err");
+  } finally {
+    trade.busy = false;
+    btn.disabled = false;
+  }
+}
+
 function handleAgentError(e) {
   if (/does not exist|not registered|api wallet/i.test(String(e?.message ?? e))) {
     dropAgent();
@@ -364,12 +428,14 @@ function updateNotional() {
 function tradeOnUser() {
   trade.agent = state.user && state.userSource === "mm" ? loadAgent() : null;
   renderTradePane();
+  refreshLeverage();
 }
 
 function tradeOnCoinChange() {
   $("tf-coin").textContent = state.coin;
   $("tf-px").value = "";
   updateSubmitButton();
+  refreshLeverage();
 }
 
 // --- event wiring ---
@@ -398,6 +464,11 @@ for (const btn of document.querySelectorAll("#tf-type button")) {
 $("tf-px").addEventListener("input", updateNotional);
 $("tf-sz").addEventListener("input", updateNotional);
 $("tf-submit").addEventListener("click", submitOrder);
+
+for (const btn of document.querySelectorAll("#tf-margin button")) {
+  btn.addEventListener("click", () => setMarginMode(btn.dataset.mode === "cross"));
+}
+$("tf-lev-set").addEventListener("click", setLeverage);
 
 // 注文・ポジションテーブルのボタン（動的生成のため委譲）
 $("orders").addEventListener("click", (e) => {

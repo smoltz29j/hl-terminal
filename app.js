@@ -5,6 +5,11 @@
 const NETS = {
   mainnet: { label: "Mainnet", http: "https://api.hyperliquid.xyz", ws: "wss://api.hyperliquid.xyz/ws", isMainnet: true },
   testnet: { label: "Testnet", http: "https://api.hyperliquid-testnet.xyz", ws: "wss://api.hyperliquid-testnet.xyz/ws", isMainnet: false },
+  // 代替エンドポイントのプリセット（公式障害・レートリミット時のフォールバック用）。
+  // どちらも Hyperliquid 運営の別プール。REST 200 + CORS * + WS 接続を 2026-07-14 に確認済み。
+  // 鍵が必要な真のサードパーティ（Chainstack/QuickNode 等）はカスタム URL で設定する。
+  "api-ui": { label: "API-UI", http: "https://api-ui.hyperliquid.xyz", ws: "wss://api-ui.hyperliquid.xyz/ws", isMainnet: true, alt: true },
+  api2: { label: "API2", http: "https://api2.hyperliquid.xyz", ws: "wss://api2.hyperliquid.xyz/ws", isMainnet: true, alt: true },
 };
 
 const API_CFG = (() => {
@@ -36,11 +41,14 @@ const TZ_SHIFT = -new Date().getTimezoneOffset() * 60;
 
 const state = {
   coin: "BTC",
+  coinList: [],          // 出来高降順の全銘柄名（銘柄ピッカーの候補。builder DEX 銘柄は "xyz:CL" 形式）
+  coinLabels: {},        // coin -> 表示名（"BTC-PERP" / "WTIOIL (xyz)" 等）
   interval: "1d",
   ws: null,
   wsReady: false,
   reconnectDelay: 1000,
   szDecimals: {},        // coin -> size decimals
+  maxLev: {},            // coin -> maxLeverage（レバレッジ変更 UI の上限）
   assetIds: {},          // coin -> asset id（meta.universe の元 index。発注に使用）
   pxDecimals: 1,         // decimals of the current coin's prices (derived from data)
   lastCandleT: 0,
@@ -52,6 +60,10 @@ const state = {
   openOrders: [],        // frontendOpenOrders の生データ（oid → 注文詳細の参照用）
   positions: [],         // clearinghouseState のポジション（クローズ操作の参照用）
 };
+
+// ---------- 2画面モード（duo.html が index.html?pane=1/2 を iframe で並べる） ----------
+const PANE = new URLSearchParams(location.search).get("pane");
+const FRAMED = window.self !== window.top;
 
 const $ = (id) => document.getElementById(id);
 
@@ -94,24 +106,71 @@ async function info(body) {
 }
 
 async function loadCoins() {
-  const [meta, ctxs] = await info({ type: "metaAndAssetCtxs" });
-  const coins = meta.universe
-    .map((u, i) => ({ ...u, ctx: ctxs[i], assetId: i }))
-    .filter((u) => !u.isDelisted)
-    .sort((a, b) => Number(b.ctx.dayNtlVlm) - Number(a.ctx.dayNtlVlm));
-  const sel = $("coin-select");
-  sel.innerHTML = "";
+  // 既定 DEX に加え、HIP-3 builder DEX（xyz 等。perpDexs で列挙）の銘柄もセレクタに載せる。
+  // 表示名は perpConciseAnnotations の displayName（例: xyz:CL → WTIOIL）+ DEX 名で区別
+  // （同名銘柄が DEX 間に複数ある: xyz:NVDA と flx:NVDA 等）。
+  const [dexs, annos] = await Promise.all([
+    info({ type: "perpDexs" }).catch(() => [null]),
+    info({ type: "perpConciseAnnotations" }).catch(() => []),
+  ]);
+  const dexNames = (Array.isArray(dexs) ? dexs : [null]).map((d) => d?.name ?? "");
+  const metas = await Promise.all(dexNames.map((dex) =>
+    info(dex ? { type: "metaAndAssetCtxs", dex } : { type: "metaAndAssetCtxs" }).catch(() => null)
+  ));
+  const disp = new Map(annos.map(([coin, a]) => [coin, a?.displayName]));
+
+  const coins = [];
+  metas.forEach((m, di) => {
+    if (!m) return;
+    const dex = dexNames[di];
+    const [meta, ctxs] = m;
+    meta.universe.forEach((u, i) => {
+      if (u.isDelisted) return;
+      coins.push({
+        ...u,
+        ctx: ctxs[i],
+        // builder DEX の asset id は採番体系が別（100000+ 系）で未検証のため登録しない
+        // → 発注時は trade.js の「この銘柄は発注に未対応です」ガードに掛かる（誤発注防止）
+        assetId: dex ? null : i,
+        label: dex ? `${disp.get(u.name) ?? u.name.split(":")[1] ?? u.name} (${dex})` : `${u.name}-PERP`,
+      });
+    });
+  });
+  coins.sort((a, b) => Number(b.ctx.dayNtlVlm) - Number(a.ctx.dayNtlVlm));
+
+  state.coinList = [];
+  state.coinLabels = {};
   for (const c of coins) {
     state.szDecimals[c.name] = c.szDecimals;
-    state.assetIds[c.name] = c.assetId;
-    const opt = document.createElement("option");
-    opt.value = c.name;
-    opt.textContent = `${c.name}-PERP`;
-    sel.appendChild(opt);
+    state.maxLev[c.name] = c.maxLeverage;
+    if (c.assetId != null) state.assetIds[c.name] = c.assetId;
+    state.coinLabels[c.name] = c.label;
+    state.coinList.push(c.name);
   }
   // 接続先によっては既定銘柄が無いことがある（testnet 等）→ 出来高最大の銘柄へ
-  if (!(state.coin in state.assetIds)) state.coin = coins[0]?.name ?? state.coin;
-  sel.value = state.coin;
+  if (!state.coinList.includes(state.coin)) state.coin = state.coinList[0] ?? state.coin;
+  setCoinOptions(state.coinList, state.coin);
+}
+
+// プルダウンの option を候補リストで作り直す（selected が候補に無ければ先頭を選択）
+function setCoinOptions(names, selected) {
+  const sel = $("coin-select");
+  sel.innerHTML = "";
+  if (!names.length) {
+    const opt = document.createElement("option");
+    opt.textContent = "該当なし";
+    opt.disabled = true;
+    opt.selected = true;
+    sel.appendChild(opt);
+    return;
+  }
+  for (const c of names) {
+    const opt = document.createElement("option");
+    opt.value = c;
+    opt.textContent = state.coinLabels[c] ?? `${c}-PERP`;
+    sel.appendChild(opt);
+  }
+  sel.value = names.includes(selected) ? selected : names[0];
 }
 
 // ---------- chart ----------
@@ -679,8 +738,9 @@ function updateCrashAlert() {
   } else {
     el.hidden = true;
   }
-  // レベル3はブラウザ通知+ビープ（日付×レベルで重複抑止 — 再読込では鳴らさない）
-  if (lv >= 3) {
+  // レベル3はブラウザ通知+ビープ（日付×レベルで重複抑止 — 再読込では鳴らさない。
+  // 2画面時は右ペインを黙らせて二重発火を防ぐ — バナー表示は両ペインに出る）
+  if (lv >= 3 && PANE !== "2") {
     const key = new Date().toISOString().slice(0, 10) + ":" + lv;
     if (localStorage.getItem("hlt-alerted") !== key) {
       localStorage.setItem("hlt-alerted", key);
@@ -950,15 +1010,68 @@ function renderStats(ctx) {
   document.title = `${warn}${fmtPx(mark)} ${state.coin} · HL Terminal`;
 }
 
+// ---------- サブティッカー（HIP-3 xyz DEX 銘柄の常時表示） ----------
+// topbar 直下に xyz:CL と xyz:MU を常時表示する。公式 UI の「WTIOIL-USDC」は
+// API 名 xyz:CL と同一銘柄（perpConciseAnnotations の displayName が WTIOIL）。
+// activeAssetCtx を常時購読（銘柄切替の unsubscribe 対象外）し、
+// 初期値は REST（dex 指定の metaAndAssetCtxs）。xyz DEX の無い接続先（testnet 等）では
+// REST が失敗 or 銘柄が見つからず、行ごと非表示のままになる。
+
+const TICKER_DEX = "xyz";
+const TICKER_COINS = [
+  { coin: "xyz:CL", label: "WTIOIL" },
+  { coin: "xyz:GOLD", label: "GOLD" },
+  { coin: "xyz:XYZ100", label: "Nasdaq100" }, // 公式表示名は XYZ100（annotations keywords: nasdaq/qqq）だがユーザー指定の呼称で表示
+  { coin: "xyz:MU", label: "MU" },
+  { coin: "xyz:SPCX", label: "SPCX" },
+];
+// 2画面時のサブティッカーは左ペインのみ（共通表示は一つ、というユーザー要望）。
+// 右ペインは REST 初期化・常時購読ごと省略する
+const TICKER_ON = PANE !== "2";
+const tickerCtxs = {}; // coin -> assetCtx
+
+function renderTicker() {
+  if (!TICKER_ON) return; // hidden のまま（銘柄として xyz:CL を表示中でも出さない）
+  const items = TICKER_COINS.filter((t) => tickerCtxs[t.coin]);
+  // 2画面時は duo.html 最上段の共通ティッカーへ描画（左ペインがデータ供給役）
+  const el = (FRAMED && window.top.document.getElementById("ticker")) || $("ticker");
+  el.hidden = !items.length;
+  if (!items.length) return;
+  el.innerHTML = items.map((t) => {
+    const c = tickerCtxs[t.coin];
+    const mark = Number(c.markPx);
+    const prev = Number(c.prevDayPx);
+    const chg = prev ? ((mark - prev) / prev) * 100 : 0;
+    const cls = chg >= 0 ? "up" : "down";
+    return `<span class="tk-item" title="${t.coin} (mark / 24h)"><span class="tk-label">${t.label}</span>` +
+      `<span class="tk-px">${fmtAnyPx(mark)}</span>` +
+      `<span class="tk-chg value ${cls}">${(chg >= 0 ? "+" : "") + chg.toFixed(2)}%</span></span>`;
+  }).join("");
+}
+
+async function loadTicker() {
+  if (!TICKER_ON) return;
+  try {
+    const [meta, ctxs] = await info({ type: "metaAndAssetCtxs", dex: TICKER_DEX });
+    meta.universe.forEach((u, i) => {
+      if (TICKER_COINS.some((t) => t.coin === u.name)) tickerCtxs[u.name] = ctxs[i];
+    });
+  } catch { /* xyz DEX の無い接続先では非表示のまま */ }
+  renderTicker();
+}
+
 // ---------- websocket ----------
 
 function subs(coin, interval) {
-  return [
+  const s = [
     { type: "l2Book", coin },
     { type: "trades", coin },
     { type: "candle", coin, interval },
-    { type: "activeAssetCtx", coin },
   ];
+  // ティッカー銘柄の activeAssetCtx は常時購読済み — 二重 subscribe や切替時の unsubscribe を避ける
+  // （ティッカーを持たない右ペインでは通常どおり銘柄ごとに購読する）
+  if (!(TICKER_ON && TICKER_COINS.some((t) => t.coin === coin))) s.push({ type: "activeAssetCtx", coin });
+  return s;
 }
 
 function wsSend(method, subscription) {
@@ -974,6 +1087,8 @@ function connect() {
     state.reconnectDelay = 1000;
     $("conn").className = "up";
     for (const s of subs(state.coin, state.interval)) wsSend("subscribe", s);
+    // ティッカー銘柄は常時購読（switchTo の unsubscribe 対象にしない）
+    if (TICKER_ON) for (const t of TICKER_COINS) wsSend("subscribe", { type: "activeAssetCtx", coin: t.coin });
   };
 
   ws.onmessage = (ev) => {
@@ -1008,7 +1123,12 @@ function connect() {
         break;
       }
       case "activeAssetCtx":
+        // ティッカー銘柄自身を表示中は両方更新する（else-if にしない）
         if (msg.data.coin === state.coin) renderStats(msg.data.ctx);
+        if (TICKER_COINS.some((t) => t.coin === msg.data.coin)) {
+          tickerCtxs[msg.data.coin] = msg.data.ctx;
+          renderTicker();
+        }
         break;
     }
   };
@@ -1119,22 +1239,39 @@ function renderAccount(ch, orders) {
     : `<tr><td class="empty" colspan="7">注文なし</td></tr>`;
 }
 
-function setUser(addr, source) {
+function setUser(addr, source, fromSync = false) {
   clearInterval(state.acctTimer);
   state.user = addr;
   state.userSource = addr ? source ?? state.userSource : null;
-  const btn = $("wallet-btn");
+  // 2画面時はウォレット接続を共有: どちらかのペインで接続/切断したらもう片方も追従する
+  // （fromSync で伝播ループを止める。相手ペインが未ロードなら ?. で黙って抜ける）
+  if (FRAMED && !fromSync) {
+    for (const w of Array.from(window.top.frames)) {
+      if (w !== window) { try { w.setUser?.(addr, source, true); } catch { /* 相手ペイン初期化前 */ } }
+    }
+  }
+  // 2画面時は duo.html 最上段の共有ボタンにも接続状態を反映（同 id を意図的に流用）
+  const btns = [$("wallet-btn")];
+  if (FRAMED) {
+    const shellBtn = window.top.document.getElementById("wallet-btn");
+    if (shellBtn) btns.push(shellBtn);
+  }
+  for (const btn of btns) {
+    if (addr) {
+      btn.textContent = addr.slice(0, 6) + "…" + addr.slice(-4);
+      btn.classList.add("connected");
+      btn.title = addr + "（クリックで切断）";
+    } else {
+      btn.textContent = "Connect";
+      btn.classList.remove("connected");
+      btn.title = "";
+    }
+  }
   if (addr) {
-    btn.textContent = addr.slice(0, 6) + "…" + addr.slice(-4);
-    btn.classList.add("connected");
-    btn.title = addr + "（クリックで切断）";
     $("account").hidden = false;
     refreshAccount();
     state.acctTimer = setInterval(refreshAccount, 5000);
   } else {
-    btn.textContent = "Connect";
-    btn.classList.remove("connected");
-    btn.title = "";
     $("account").hidden = true;
   }
   if (typeof tradeOnUser === "function") tradeOnUser();
@@ -1206,6 +1343,10 @@ $("wallet-btn").addEventListener("click", () => {
   if (state.user) disconnectWallet();
   else openModal();
 });
+// 2画面時のウォレット/設定ボタンは duo.html 最上段の共有コントロールに一本化
+// （クリックは左ペインへ委譲される）。ペイン内の重複ボタンは隠す。
+// 右ペインの Trade 欄からの接続は引き続き可能で、その場合も左に伝播する
+if (FRAMED) $("wallet-btn").hidden = $("settings-btn").hidden = $("logo").hidden = true;
 $("cm-close").addEventListener("click", closeModal);
 $("connect-modal").addEventListener("click", (e) => { if (e.target.id === "connect-modal") closeModal(); });
 $("cm-mm").addEventListener("click", connectMetaMask);
@@ -1218,13 +1359,62 @@ async function switchTo(coin, interval) {
   const coinChanged = coin !== state.coin;
   state.coin = coin;
   state.interval = interval;
+  // 2画面時はペインごとに銘柄を記憶（設定保存等での reload 後も復元される）
+  if (FRAMED) localStorage.setItem(`hlt-coin:p${PANE}`, coin);
   $("asks").innerHTML = $("bids").innerHTML = $("trades").innerHTML = "";
   await loadCandles();
   for (const s of subs(coin, interval)) wsSend("subscribe", s);
   if (coinChanged && typeof tradeOnCoinChange === "function") tradeOnCoinChange();
 }
 
-$("coin-select").addEventListener("change", (e) => switchTo(e.target.value, state.interval));
+// 銘柄の絞り込み検索: 検索欄への入力でプルダウンの候補を絞る（プルダウン単独でも従来どおり使える）
+{
+  const filterEl = $("coin-filter");
+  const sel = $("coin-select");
+
+  // 前方一致を優先し、次いで部分一致（各グループ内は出来高順のまま）。
+  // API 名（"xyz:CL" とその ":" 以降）と表示名（"WTIOIL"）の両方を一致対象にする。
+  // 部分一致は名前のみ（"-PERP" や "(xyz)" を含めると全銘柄が一致してしまう）
+  function matches(q) {
+    const Q = q.trim().toUpperCase();
+    if (!Q) return state.coinList.slice();
+    const pre = [], sub = [];
+    for (const c of state.coinList) {
+      const keys = [c, c.split(":").pop(), (state.coinLabels[c] ?? "").replace(/ \(.+\)$/, "")]
+        .map((s) => s.toUpperCase());
+      if (keys.some((k) => k.startsWith(Q) || `${k}-PERP`.startsWith(Q))) pre.push(c);
+      else if (keys.some((k) => k.includes(Q))) sub.push(c);
+    }
+    return pre.concat(sub);
+  }
+
+  // 選択確定後は検索をリセットして全銘柄のプルダウンに戻す
+  function resetFilter() {
+    filterEl.value = "";
+    setCoinOptions(state.coinList, state.coin);
+  }
+
+  filterEl.addEventListener("input", () => setCoinOptions(matches(filterEl.value), state.coin));
+  filterEl.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      // 先頭候補（プルダウンに表示中の銘柄）に切替
+      if (sel.value && sel.value in state.coinLabels) {
+        if (sel.value !== state.coin) switchTo(sel.value, state.interval);
+        resetFilter();
+        filterEl.blur();
+      }
+    } else if (e.key === "Escape") {
+      resetFilter();
+      filterEl.blur();
+    }
+  });
+
+  sel.addEventListener("change", async (e) => {
+    await switchTo(e.target.value, state.interval);
+    resetFilter(); // 絞り込み中に選んだ場合も次回は全銘柄に戻す
+  });
+}
 
 for (const btn of document.querySelectorAll("#intervals button")) {
   btn.addEventListener("click", () => {
@@ -1234,10 +1424,38 @@ for (const btn of document.querySelectorAll("#intervals button")) {
   });
 }
 
+// ---------- 2画面切替ボタン ----------
+// PC（スマホ幅 900px 超）は既定で2画面（index.html 冒頭のリダイレクト）。ここは行き来のボタン:
+// 単独表示では「2画面」、ペイン内では「1画面」。選択は localStorage hlt-view に記憶され、
+// 次回アクセス時の既定（リダイレクトの有無）になる
+{
+  const btn = $("split-btn");
+  const pc = matchMedia("(min-width: 901px)");
+  const render = () => {
+    // ペイン内では出さない（「1画面」は duo.html 最上段の共有ボタンにある）
+    if (FRAMED) { btn.hidden = true; return; }
+    btn.textContent = "2画面";
+    btn.title = "左右2画面で別銘柄を表示";
+    btn.hidden = !pc.matches;
+  };
+  btn.addEventListener("click", () => {
+    localStorage.setItem("hlt-view", "duo");
+    location.href = "duo.html";
+  });
+  pc.addEventListener("change", render);
+  render();
+}
+
+// 2画面時: 片方のペインで API 接続先を変更・保存したら、もう片方も追従して再読込する
+// （storage イベントは他ウィンドウの変更でのみ発火するので、自分は二重 reload しない）
+window.addEventListener("storage", (e) => {
+  if (e.key === "hlt-api") location.reload();
+});
+
 // ---------- API settings modal ----------
 
 function openSettings() {
-  const mode = NET.custom ? "custom" : (NET.isMainnet ? "mainnet" : "testnet");
+  const mode = NET.custom ? "custom" : (NETS[API_CFG.mode] ? API_CFG.mode : "mainnet");
   document.querySelector(`input[name="api-mode"][value="${mode}"]`).checked = true;
   $("api-http").value = API_CFG.http || "";
   $("api-ws").value = API_CFG.ws || "";
@@ -1266,7 +1484,7 @@ $("settings-modal").addEventListener("click", (e) => { if (e.target.id === "sett
 
 function renderNetBadge() {
   const badge = $("net-badge");
-  const isDefault = !NET.custom && NET.isMainnet;
+  const isDefault = !NET.custom && !NET.alt && NET.isMainnet;
   badge.hidden = isDefault;
   if (!isDefault) {
     badge.textContent = NET.custom ? `CUSTOM (${NET.isMainnet ? "Mainnet" : "Testnet"})` : NET.label.toUpperCase();
@@ -1278,11 +1496,17 @@ function renderNetBadge() {
 // ---------- boot ----------
 
 (async () => {
+  // 2画面ペインは前回の銘柄を復元（実在しない銘柄なら loadCoins が先頭銘柄へフォールバック）
+  if (FRAMED) {
+    const saved = localStorage.getItem(`hlt-coin:p${PANE}`);
+    if (saved) state.coin = saved;
+  }
   setupChart();
   applyIndicatorVisibility();
   renderNetBadge();
   await loadCoins();
   await loadCandles();
+  loadTicker(); // 初期値。以後は WS activeAssetCtx で更新
   connect();
   demandConnect();
   setInterval(applyTlWatch, 30000); // 実需フローの追記を定期更新
