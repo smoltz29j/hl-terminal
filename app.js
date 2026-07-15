@@ -52,6 +52,7 @@ const state = {
   assetIds: {},          // coin -> asset id（meta.universe の元 index。発注に使用）
   pxDecimals: 1,         // decimals of the current coin's prices (derived from data)
   lastCandleT: 0,
+  bookTime: 0,           // 描画済み板の time（WS と REST ポーリングの併用で古い方を捨てる）
   candles: [],           // 現在銘柄・現在足の生ローソク（指標計算用）
   markPx: 0,             // 現在銘柄の mark（成行の基準価格）
   user: null,            // connected/watched wallet address
@@ -942,6 +943,9 @@ async function loadCandles() {
 // ---------- order book ----------
 
 function renderBook(data) {
+  // WS snapshot と REST ポーリングが併走するため、描画済みより古いデータは捨てる
+  if (data.time && data.time <= state.bookTime) return;
+  if (data.time) state.bookTime = data.time;
   const [bids, asks] = data.levels;
   const b = bids.slice(0, BOOK_LEVELS);
   const a = asks.slice(0, BOOK_LEVELS);
@@ -1159,6 +1163,23 @@ setInterval(() => {
   if (state.wsReady) state.ws.send(JSON.stringify({ method: "ping" }));
 }, 45000);
 
+// WS の l2Book snapshot は約5秒間隔でしか届かない（2026-07-15 実測: 公式/api-ui/api2 とも
+// 中央値 5.4s、nSigFigs 指定でも不変）。板の鮮度は REST ポーリング（weight 2/回・~34ms）で
+// 補い、WS 購読は切断時等のフォールバックとして維持する。古い方は renderBook の time
+// ガードが捨てる。1s 間隔 ×2ペインでも 240 weight/分で IP 上限 1200/分に対し余裕
+const BOOK_POLL_MS = 1000;
+let bookPollBusy = false;
+setInterval(async () => {
+  if (document.hidden || bookPollBusy) return;
+  bookPollBusy = true;
+  const coin = state.coin;
+  try {
+    const d = await info({ type: "l2Book", coin });
+    if (coin === state.coin) renderBook(d);
+  } catch { /* 一時的な失敗は次周期に任せる */ }
+  bookPollBusy = false;
+}, BOOK_POLL_MS);
+
 // ---------- wallet / account ----------
 
 function fmtUsd2(x) {
@@ -1375,6 +1396,7 @@ async function switchTo(coin, interval) {
   // 2画面時はペインごとに銘柄を記憶（設定保存等での reload 後も復元される）
   if (FRAMED) localStorage.setItem(`hlt-coin:p${PANE}`, coin);
   $("asks").innerHTML = $("bids").innerHTML = $("trades").innerHTML = "";
+  state.bookTime = 0; // 銘柄が変わるので板の鮮度ガードをリセット
   await loadCandles();
   for (const s of subs(coin, interval)) wsSend("subscribe", s);
   if (coinChanged && typeof tradeOnCoinChange === "function") tradeOnCoinChange();
