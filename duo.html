@@ -7,13 +7,17 @@
 <link rel="icon" href="data:,">
 <!-- style.css を link し、#topbar / #wallet-btn / #split-btn / #settings-btn / #ticker の
      id を本体とあえて同じにして見た目を共有する（別ドキュメントなので id 重複にはならない） -->
-<link rel="stylesheet" href="style.css?v=14">
+<link rel="stylesheet" href="style.css?v=20">
 <style>
   html, body { height: 100%; }
   #wrap { flex: 1; display: flex; min-height: 0; }
   #wrap iframe { flex: 1; min-width: 0; border: 0; }
   #wrap iframe + iframe { border-left: 2px solid var(--hairline); }
   #logo { margin-right: auto; }
+  /* 共有アカウント欄（ポジション+オープンオーダー）。左ペインの app.js が描画し、
+     操作ボタン（クローズ/変更/取消）も左ペインの trade.js が処理する。
+     表示中は最低 24vh を確保して2ペイン領域を少し短くする（ユーザー要望 2026-07-15） */
+  #account:not([hidden]) { flex: 0 0 auto; min-height: 24vh; max-height: 38vh; }
 </style>
 </head>
 <body>
@@ -25,10 +29,58 @@
   <button id="wallet-btn">Connect</button>
   <button id="split-btn" title="1画面表示に戻す">1画面</button>
   <button id="settings-btn" title="API 接続先の設定">⚙</button>
+  <button id="lang-btn" title="表示言語の切替"></button>
 </header>
 <div id="ticker" hidden></div>
 <div id="wrap"></div>
+<!-- 共有アカウント欄: 2ペイン分を重複表示せず、ここに1つだけ全幅で置く。
+     id は index.html（1画面時の footer）と同じ — 別ドキュメントなので重複にならず、
+     app.js は FRAMED 時に window.top.document のこちらへ描画する -->
+<footer id="account" hidden>
+  <div id="acct-summary">
+    <div class="stat"><span class="label">Equity</span><span id="ac-equity" class="value">–</span></div>
+    <div class="stat"><span class="label">Withdrawable</span><span id="ac-withdraw" class="value">–</span></div>
+    <div class="stat"><span class="label">Margin Used</span><span id="ac-margin" class="value">–</span></div>
+    <div class="stat"><span class="label">uPnL</span><span id="ac-upnl" class="value">–</span></div>
+  </div>
+  <div id="acct-tables">
+    <section>
+      <h2>Positions</h2>
+      <table id="positions">
+        <thead><tr><th>Coin</th><th>Size</th><th>Entry</th><th>Mark</th><th>uPnL (ROE)</th><th>Liq. Px</th><th>Margin</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </section>
+    <section>
+      <h2>Open Orders</h2>
+      <table id="orders">
+        <thead><tr><th>Coin</th><th>Side</th><th>Price</th><th>Size</th><th></th><th>Time</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </section>
+  </div>
+</footer>
 <script>
+// 表示言語（既定 JP）。シェル自身の静的文言はここで差し替え、ペイン内は各 index.html の
+// applyLang() が担当。切替は全体 reload（iframe も作り直される）
+const LANG = localStorage.getItem("hlt-lang") === "en" ? "en" : "jp";
+if (LANG === "en") {
+  document.documentElement.lang = "en";
+  const sp = document.getElementById("split-btn");
+  sp.textContent = "Single";
+  sp.title = "Back to single view";
+  document.getElementById("settings-btn").title = "API endpoint settings";
+}
+{
+  const lb = document.getElementById("lang-btn");
+  lb.textContent = LANG === "en" ? "EN" : "JP"; // 表記は現在の言語（2状態で入れ替わる）
+  lb.title = LANG === "en" ? "Language" : "表示言語の切替";
+  lb.addEventListener("click", () => {
+    localStorage.setItem("hlt-lang", LANG === "en" ? "jp" : "en");
+    location.reload();
+  });
+}
+
 // 自分への ?user= 等のクエリを各ペインへ引き継ぐ
 const q = new URLSearchParams(location.search);
 q.delete("pane");
@@ -36,7 +88,7 @@ const rest = q.toString() ? "&" + q.toString() : "";
 for (const p of [1, 2]) {
   const f = document.createElement("iframe");
   f.src = `index.html?pane=${p}${rest}`;
-  f.title = p === 1 ? "左ペイン" : "右ペイン";
+  f.title = p === 1 ? (LANG === "en" ? "Left pane" : "左ペイン") : (LANG === "en" ? "Right pane" : "右ペイン");
   document.getElementById("wrap").appendChild(f);
 }
 

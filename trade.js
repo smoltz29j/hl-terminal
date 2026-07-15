@@ -55,7 +55,7 @@ async function exchangePost(action, signature, nonce) {
 
 // 成行用: mark±slippage を「有効数字5桁 + 小数 (6 - szDecimals) 桁」に丸める（SDK と同じ規則）
 function slippagePx(isBuy, szd) {
-  if (!(state.markPx > 0)) throw new Error("mark 価格が未取得です");
+  if (!(state.markPx > 0)) throw new Error(T("mark 価格が未取得です", "Mark price unavailable"));
   let px = state.markPx * (isBuy ? 1 + MARKET_SLIPPAGE : 1 - MARKET_SLIPPAGE);
   px = Number(px.toPrecision(5));
   return Number(px.toFixed(Math.max(0, 6 - szd)));
@@ -68,7 +68,7 @@ function parsePositive(s, label) {
     .replace(/[．。]/g, ".")
     .replace(/[,，\s]/g, "");
   const n = Number(t);
-  if (!Number.isFinite(n) || n <= 0) throw new Error(`${label}が不正です: 「${s}」`);
+  if (!Number.isFinite(n) || n <= 0) throw new Error(T(`${label}が不正です: 「${s}」`, `Invalid ${label}: "${s}"`));
   return n;
 }
 
@@ -78,7 +78,7 @@ async function enableTrading() {
   const btn = $("tg-btn");
   btn.disabled = true;
   try {
-    tradeStatus("MetaMask で承認待ち…");
+    tradeStatus(T("MetaMask で承認待ち…", "Waiting for MetaMask approval…"));
     const agent = ethers.Wallet.createRandom();
     const nonce = Date.now();
     const chainIdHex = await mmProvider.request({ method: "eth_chainId" });
@@ -95,13 +95,13 @@ async function enableTrading() {
       method: "eth_signTypedData_v4",
       params: [state.user, JSON.stringify(typed)],
     });
-    tradeStatus("承認を送信中…");
+    tradeStatus(T("承認を送信中…", "Submitting approval…"));
     await exchangePost(action, HLSign.splitSig(sigHex), nonce);
     localStorage.setItem(agentStoreKey(state.user), JSON.stringify({
       key: agent.privateKey, address: agent.address, name: AGENT_NAME, approvedAt: Date.now(),
     }));
     trade.agent = agent;
-    tradeStatus("取引を有効化しました", "ok");
+    tradeStatus(T("取引を有効化しました", "Trading enabled"), "ok");
     renderTradePane();
     refreshAccount();
     refreshLeverage();
@@ -115,8 +115,8 @@ async function enableTrading() {
 
 function errMsg(e) {
   const m = String(e?.message ?? e);
-  if (/must deposit/i.test(m)) return `このアカウントは ${NET.isMainnet ? "mainnet" : "testnet"} に入金がありません`;
-  if (/user rejected|denied/i.test(m)) return "署名がキャンセルされました";
+  if (/must deposit/i.test(m)) return T(`このアカウントは ${NET.isMainnet ? "mainnet" : "testnet"} に入金がありません`, `This account has no deposit on ${NET.isMainnet ? "mainnet" : "testnet"}`);
+  if (/user rejected|denied/i.test(m)) return T("署名がキャンセルされました", "Signature cancelled");
   return m.length > 200 ? m.slice(0, 200) + "…" : m;
 }
 
@@ -129,19 +129,20 @@ async function submitOrder() {
   const szd = state.szDecimals[coin] ?? 0;
   const isBuy = trade.side === "buy";
   try {
-    if (asset == null) throw new Error("この銘柄は発注に未対応です");
-    const sz = Number(parsePositive($("tf-sz").value, "数量").toFixed(szd));
-    if (sz <= 0) throw new Error(`数量が最小単位（${Math.pow(10, -szd)}）未満です`);
+    if (asset == null) throw new Error(T("この銘柄は発注に未対応です", "Ordering is not supported for this symbol"));
+    const sz = Number(parsePositive($("tf-sz").value, T("数量", "size")).toFixed(szd));
+    if (sz <= 0) throw new Error(T(`数量が最小単位（${Math.pow(10, -szd)}）未満です`, `Size is below the minimum unit (${Math.pow(10, -szd)})`));
     let px, tif;
     if (trade.type === "market") { px = slippagePx(isBuy, szd); tif = "Ioc"; }
-    else { px = parsePositive($("tf-px").value, "価格"); tif = "Gtc"; }
+    else { px = parsePositive($("tf-px").value, T("価格", "price")); tif = "Gtc"; }
 
-    const label = `${coin} ${isBuy ? "買い" : "売り"} ${sz} @ ${trade.type === "market" ? "成行" : px}`;
-    if (NET.isMainnet && !confirm(`【Mainnet — 実資金】\n${label}\n送信しますか？`)) return;
+    const label = T(`${coin} ${isBuy ? "買い" : "売り"} ${sz} @ ${trade.type === "market" ? "成行" : px}`,
+      `${coin} ${isBuy ? "Buy" : "Sell"} ${sz} @ ${trade.type === "market" ? "market" : px}`);
+    if (NET.isMainnet && !confirm(T(`【Mainnet — 実資金】\n${label}\n送信しますか？`, `[Mainnet — real funds]\n${label}\nSend?`))) return;
 
     trade.busy = true;
     $("tf-submit").disabled = true;
-    tradeStatus("送信中…");
+    tradeStatus(T("送信中…", "Sending…"));
 
     const order = {
       a: asset, b: isBuy,
@@ -156,9 +157,9 @@ async function submitOrder() {
 
     const st = resp?.data?.statuses?.[0] ?? {};
     if (st.error) throw new Error(st.error);
-    if (st.filled) tradeStatus(`約定: ${st.filled.totalSz} @ ${st.filled.avgPx}`, "ok");
-    else if (st.resting) tradeStatus(`板に登録（oid ${st.resting.oid}）`, "ok");
-    else tradeStatus("送信しました", "ok");
+    if (st.filled) tradeStatus(T(`約定: ${st.filled.totalSz} @ ${st.filled.avgPx}`, `Filled: ${st.filled.totalSz} @ ${st.filled.avgPx}`), "ok");
+    else if (st.resting) tradeStatus(T(`板に登録（oid ${st.resting.oid}）`, `Resting on book (oid ${st.resting.oid})`), "ok");
+    else tradeStatus(T("送信しました", "Sent"), "ok");
     refreshAccount();
   } catch (e) {
     console.error("order:", e);
@@ -179,13 +180,13 @@ async function cancelOrder(coin, oid) {
     const resp = await exchangePost(action, sig, nonce);
     const st = resp?.data?.statuses?.[0];
     if (st && st.error) throw new Error(st.error);
-    tradeStatus(`キャンセルしました（oid ${oid}）`, "ok");
+    tradeStatus(T(`キャンセルしました（oid ${oid}）`, `Cancelled (oid ${oid})`), "ok");
     refreshAccount();
   } catch (e) {
     console.error("cancel:", e);
     handleAgentError(e);
     tradeStatus(errMsg(e), "err");
-    alert("キャンセルに失敗:\n" + errMsg(e));
+    alert(T("キャンセルに失敗:\n", "Cancel failed:\n") + errMsg(e));
   }
 }
 
@@ -193,20 +194,20 @@ async function cancelOrder(coin, oid) {
 async function modifyOrder(oid) {
   if (!tradeReady()) return;
   const o = state.openOrders.find((x) => x.oid === oid);
-  if (!o) { tradeStatus("注文が見つかりません（更新直後の可能性）", "err"); return; }
+  if (!o) { tradeStatus(T("注文が見つかりません（更新直後の可能性）", "Order not found (it may have just changed)"), "err"); return; }
   try {
-    const pxIn = prompt(`${o.coin} ${o.side === "B" ? "買い" : "売り"} の新しい価格:`, o.limitPx);
+    const pxIn = prompt(T(`${o.coin} ${o.side === "B" ? "買い" : "売り"} の新しい価格:`, `New price for ${o.coin} ${o.side === "B" ? "buy" : "sell"}:`), o.limitPx);
     if (pxIn === null) return;
-    const szIn = prompt("新しい数量:", o.sz);
+    const szIn = prompt(T("新しい数量:", "New size:"), o.sz);
     if (szIn === null) return;
-    const px = parsePositive(pxIn, "価格");
+    const px = parsePositive(pxIn, T("価格", "price"));
     const szd = state.szDecimals[o.coin] ?? 0;
-    const sz = Number(parsePositive(szIn, "数量").toFixed(szd));
-    if (sz <= 0) throw new Error(`数量が最小単位（${Math.pow(10, -szd)}）未満です`);
+    const sz = Number(parsePositive(szIn, T("数量", "size")).toFixed(szd));
+    if (sz <= 0) throw new Error(T(`数量が最小単位（${Math.pow(10, -szd)}）未満です`, `Size is below the minimum unit (${Math.pow(10, -szd)})`));
 
-    if (NET.isMainnet && !confirm(`【Mainnet — 実資金】\n${o.coin} 注文 ${oid} を修正:\n${o.limitPx} → ${px} / ${o.sz} → ${sz}\n送信しますか？`)) return;
+    if (NET.isMainnet && !confirm(T(`【Mainnet — 実資金】\n${o.coin} 注文 ${oid} を修正:\n${o.limitPx} → ${px} / ${o.sz} → ${sz}\n送信しますか？`, `[Mainnet — real funds]\nModify ${o.coin} order ${oid}:\n${o.limitPx} → ${px} / ${o.sz} → ${sz}\nSend?`))) return;
 
-    tradeStatus("修正を送信中…");
+    tradeStatus(T("修正を送信中…", "Submitting modify…"));
     const action = {
       type: "batchModify",
       modifies: [{
@@ -224,13 +225,13 @@ async function modifyOrder(oid) {
     const resp = await exchangePost(action, sig, nonce);
     const st = resp?.data?.statuses?.[0] ?? {};
     if (st.error) throw new Error(st.error);
-    tradeStatus(`修正しました（oid ${st.resting?.oid ?? oid}）`, "ok");
+    tradeStatus(T(`修正しました（oid ${st.resting?.oid ?? oid}）`, `Modified (oid ${st.resting?.oid ?? oid})`), "ok");
     refreshAccount();
   } catch (e) {
     console.error("modify:", e);
     handleAgentError(e);
     tradeStatus(errMsg(e), "err");
-    alert("注文修正に失敗:\n" + errMsg(e)); // テーブル操作はステータス行が目に入りにくいため明示
+    alert(T("注文修正に失敗:\n", "Modify failed:\n") + errMsg(e)); // テーブル操作はステータス行が目に入りにくいため明示
   }
 }
 
@@ -238,41 +239,42 @@ async function modifyOrder(oid) {
 async function closePosition(coin) {
   if (!tradeReady()) return;
   const p = state.positions.find((x) => x.coin === coin);
-  if (!p) { tradeStatus("ポジションが見つかりません", "err"); return; }
+  if (!p) { tradeStatus(T("ポジションが見つかりません", "Position not found"), "err"); return; }
   try {
     const szi = Number(p.szi);
     const isBuy = szi < 0; // ショートは買い戻し、ロングは売り
     const maxSz = Math.abs(szi);
     const asset = state.assetIds[coin];
-    if (asset == null) throw new Error("この銘柄はクローズ操作に未対応です");
+    if (asset == null) throw new Error(T("この銘柄はクローズ操作に未対応です", "Closing is not supported for this symbol"));
     const szd = state.szDecimals[coin] ?? 0;
 
-    const szIn = prompt(`${coin} のクローズ数量（最大 ${maxSz}）:`, maxSz);
+    const szIn = prompt(T(`${coin} のクローズ数量（最大 ${maxSz}）:`, `Close size for ${coin} (max ${maxSz}):`), maxSz);
     if (szIn === null) return;
-    const sz = Number(parsePositive(szIn, "数量").toFixed(szd));
-    if (sz - maxSz > 1e-12) throw new Error(`ポジションサイズ（${maxSz}）を超えています`);
+    const sz = Number(parsePositive(szIn, T("数量", "size")).toFixed(szd));
+    if (sz - maxSz > 1e-12) throw new Error(T(`ポジションサイズ（${maxSz}）を超えています`, `Exceeds the position size (${maxSz})`));
 
-    const pxIn = prompt("指値価格（空欄なら成行）:", "");
+    const pxIn = prompt(T("指値価格（空欄なら成行）:", "Limit price (blank = market):"), "");
     if (pxIn === null) return;
     let px, tif, kind;
     if (pxIn.trim() === "") {
       // 成行 = IOC。mark はポジションの値から算出（チャート表示外の銘柄でも取れる）
       const mark = Number(p.positionValue) / maxSz;
-      if (!(mark > 0)) throw new Error("mark 価格を取得できません");
+      if (!(mark > 0)) throw new Error(T("mark 価格を取得できません", "Mark price unavailable"));
       px = mark * (isBuy ? 1 + MARKET_SLIPPAGE : 1 - MARKET_SLIPPAGE);
       px = Number(px.toPrecision(5));
       px = Number(px.toFixed(Math.max(0, 6 - szd)));
       tif = "Ioc";
-      kind = "成行";
+      kind = T("成行", "market");
     } else {
-      px = parsePositive(pxIn, "価格");
+      px = parsePositive(pxIn, T("価格", "price"));
       tif = "Gtc";
-      kind = `指値 ${px}`;
+      kind = T(`指値 ${px}`, `limit ${px}`);
     }
 
-    if (!confirm(`${NET.isMainnet ? "【Mainnet — 実資金】\n" : ""}${coin} ポジション ${p.szi} のうち ${sz} を${kind}でクローズしますか？`)) return;
+    if (!confirm(T(`${NET.isMainnet ? "【Mainnet — 実資金】\n" : ""}${coin} ポジション ${p.szi} のうち ${sz} を${kind}でクローズしますか？`,
+      `${NET.isMainnet ? "[Mainnet — real funds]\n" : ""}Close ${sz} of the ${coin} position (${p.szi}) at ${kind}?`))) return;
 
-    tradeStatus("クローズを送信中…");
+    tradeStatus(T("クローズを送信中…", "Submitting close…"));
     const order = {
       a: asset, b: isBuy,
       p: HLSign.floatToWire(px), s: HLSign.floatToWire(sz),
@@ -285,15 +287,15 @@ async function closePosition(coin) {
     const resp = await exchangePost(action, sig, nonce);
     const st = resp?.data?.statuses?.[0] ?? {};
     if (st.error) throw new Error(st.error);
-    if (st.filled) tradeStatus(`クローズ約定: ${st.filled.totalSz} @ ${st.filled.avgPx}`, "ok");
-    else if (st.resting) tradeStatus(`クローズ指値を板に登録（oid ${st.resting.oid}）`, "ok");
-    else tradeStatus("クローズ注文を送信しました", "ok");
+    if (st.filled) tradeStatus(T(`クローズ約定: ${st.filled.totalSz} @ ${st.filled.avgPx}`, `Close filled: ${st.filled.totalSz} @ ${st.filled.avgPx}`), "ok");
+    else if (st.resting) tradeStatus(T(`クローズ指値を板に登録（oid ${st.resting.oid}）`, `Close limit resting (oid ${st.resting.oid})`), "ok");
+    else tradeStatus(T("クローズ注文を送信しました", "Close order sent"), "ok");
     refreshAccount();
   } catch (e) {
     console.error("close:", e);
     handleAgentError(e);
     tradeStatus(errMsg(e), "err");
-    alert("クローズに失敗:\n" + errMsg(e));
+    alert(T("クローズに失敗:\n", "Close failed:\n") + errMsg(e));
   }
 }
 
@@ -308,7 +310,7 @@ async function refreshLeverage() {
   const asset = state.assetIds[coin];
   if (!tradeReady() || asset == null) { row.hidden = true; return; }
   row.hidden = false;
-  $("tf-lev-max").textContent = `x（最大 ${state.maxLev[coin] ?? "?"}）`;
+  $("tf-lev-max").textContent = T(`x（最大 ${state.maxLev[coin] ?? "?"}）`, `x (max ${state.maxLev[coin] ?? "?"})`);
   try {
     const d = await info({ type: "activeAssetData", user: state.user, coin });
     if (state.coin !== coin) return; // 取得中に銘柄が切り替わったら破棄
@@ -331,23 +333,23 @@ async function setLeverage() {
   const asset = state.assetIds[coin];
   const btn = $("tf-lev-set");
   try {
-    if (asset == null) throw new Error("この銘柄はレバレッジ変更に未対応です");
+    if (asset == null) throw new Error(T("この銘柄はレバレッジ変更に未対応です", "Leverage change is not supported for this symbol"));
     const max = state.maxLev[coin] ?? 1;
-    const lev = Math.round(parsePositive($("tf-lev").value, "レバレッジ"));
-    if (lev < 1 || lev > max) throw new Error(`レバレッジは 1〜${max} の整数で指定してください`);
+    const lev = Math.round(parsePositive($("tf-lev").value, T("レバレッジ", "leverage")));
+    if (lev < 1 || lev > max) throw new Error(T(`レバレッジは 1〜${max} の整数で指定してください`, `Leverage must be an integer between 1 and ${max}`));
     const modeTxt = trade.levCross ? "Cross" : "Isolated";
-    if (NET.isMainnet && !confirm(`【Mainnet】${coin} のレバレッジを ${lev}x（${modeTxt}）に変更します。\nポジションがある場合は必要証拠金・清算価格が変わります。よろしいですか？`)) return;
+    if (NET.isMainnet && !confirm(T(`【Mainnet】${coin} のレバレッジを ${lev}x（${modeTxt}）に変更します。\nポジションがある場合は必要証拠金・清算価格が変わります。よろしいですか？`, `[Mainnet] Change ${coin} leverage to ${lev}x (${modeTxt}).\nMargin requirement and liquidation price of existing positions will change. OK?`))) return;
 
     trade.busy = true;
     btn.disabled = true;
-    tradeStatus("レバレッジ変更中…");
+    tradeStatus(T("レバレッジ変更中…", "Updating leverage…"));
     // msgpack はキー順序がハッシュに影響する。Python SDK update_leverage と同じ
     // type, asset, isCross, leverage の順を崩さないこと
     const action = { type: "updateLeverage", asset, isCross: trade.levCross, leverage: lev };
     const nonce = Date.now();
     const sig = await HLSign.signL1Action(trade.agent, action, null, nonce, NET.isMainnet);
     await exchangePost(action, sig, nonce);
-    tradeStatus(`${coin} のレバレッジを ${lev}x（${modeTxt}）に変更しました`, "ok");
+    tradeStatus(T(`${coin} のレバレッジを ${lev}x（${modeTxt}）に変更しました`, `${coin} leverage set to ${lev}x (${modeTxt})`), "ok");
     refreshAccount();
     refreshLeverage();
   } catch (e) {
@@ -392,16 +394,21 @@ function renderTradePane() {
   const msg = $("tg-msg");
   const btn = $("tg-btn");
   if (!state.user) {
-    msg.textContent = "発注にはウォレット接続が必要です。";
-    btn.textContent = "ウォレット接続";
+    // 2画面時の接続ボタンは duo.html 最上段の Connect に一本化（ユーザー要望 2026-07-15。
+    // ペイン内には案内文だけ残す — 接続は共有なのでどこで繋いでも両ペインに反映される）
+    msg.textContent = FRAMED
+      ? T("発注にはウォレット接続が必要です。最上段の Connect から接続してください。", "Connect a wallet to trade — use the Connect button at the top.")
+      : T("発注にはウォレット接続が必要です。", "Connect a wallet to place orders.");
+    btn.textContent = T("ウォレット接続", "Connect Wallet");
     btn.onclick = openModal;
-    btn.hidden = false;
+    btn.hidden = FRAMED;
   } else if (state.userSource !== "mm") {
-    msg.textContent = "ウォッチモードでは発注できません。MetaMask で接続してください。";
+    msg.textContent = T("ウォッチモードでは発注できません。MetaMask で接続してください。", "Watch mode cannot place orders. Connect with MetaMask.");
     btn.hidden = true;
   } else {
-    msg.textContent = `MetaMask の署名で API ウォレット（agent 鍵）を承認すると発注できます。承認後の注文はワンクリックで送信されます（${NET.isMainnet ? "Mainnet・実資金" : "Testnet"}）。`;
-    btn.textContent = "取引を有効化";
+    msg.textContent = T(`MetaMask の署名で API ウォレット（agent 鍵）を承認すると発注できます。承認後の注文はワンクリックで送信されます（${NET.isMainnet ? "Mainnet・実資金" : "Testnet"}）。`,
+      `Approve an API wallet (agent key) with a MetaMask signature to enable trading. Orders are then sent with one click (${NET.isMainnet ? "Mainnet — real funds" : "Testnet"}).`);
+    btn.textContent = T("取引を有効化", "Enable trading");
     btn.onclick = enableTrading;
     btn.hidden = false;
   }
@@ -410,10 +417,12 @@ function renderTradePane() {
 function updateSubmitButton() {
   const btn = $("tf-submit");
   const isBuy = trade.side === "buy";
-  btn.textContent = `${state.coin} を${isBuy ? "買う" : "売る"}${trade.type === "market" ? "（成行）" : ""}`;
+  btn.textContent = T(`${state.coin} を${isBuy ? "買う" : "売る"}${trade.type === "market" ? "（成行）" : ""}`,
+    `${isBuy ? "Buy" : "Sell"} ${state.coin}${trade.type === "market" ? " (market)" : ""}`);
   btn.className = isBuy ? "buy" : "sell";
   $("tf-px").disabled = trade.type === "market";
-  $("tf-px").placeholder = trade.type === "market" ? "成行" : "0.0";
+  // framed ペインではラベル列を隠し placeholder がラベル代わり（1画面ではラベルと重複するため 0.0）
+  $("tf-px").placeholder = trade.type === "market" ? T("成行", "Market") : FRAMED ? T("価格", "Price") : "0.0";
   updateNotional();
 }
 
@@ -461,6 +470,7 @@ for (const btn of document.querySelectorAll("#tf-type button")) {
   });
 }
 
+if (!FRAMED) { $("tf-px").placeholder = "0.0"; $("tf-sz").placeholder = "0.0"; } // 1画面ではラベル列があるため
 $("tf-px").addEventListener("input", updateNotional);
 $("tf-sz").addEventListener("input", updateNotional);
 $("tf-submit").addEventListener("click", submitOrder);
@@ -470,17 +480,21 @@ for (const btn of document.querySelectorAll("#tf-margin button")) {
 }
 $("tf-lev-set").addEventListener("click", setLeverage);
 
-// 注文・ポジションテーブルのボタン（動的生成のため委譲）
-$("orders").addEventListener("click", (e) => {
-  const cxl = e.target.closest("button.cxl");
-  if (cxl) { cancelOrder(cxl.dataset.coin, Number(cxl.dataset.oid)); return; }
-  const mod = e.target.closest("button.mod");
-  if (mod) modifyOrder(Number(mod.dataset.oid));
-});
+// 注文・ポジションテーブルのボタン（動的生成のため委譲）。2画面時のテーブルは
+// duo.html の共有 footer にあり、処理するのは供給役（左ペイン）だけ。ペイン再読込で
+// 親ドキュメントに古いリスナーが積み重ならないよう addEventListener でなく onclick 代入
+if (ACCT_ON) {
+  acct("orders").onclick = (e) => {
+    const cxl = e.target.closest("button.cxl");
+    if (cxl) { cancelOrder(cxl.dataset.coin, Number(cxl.dataset.oid)); return; }
+    const mod = e.target.closest("button.mod");
+    if (mod) modifyOrder(Number(mod.dataset.oid));
+  };
 
-$("positions").addEventListener("click", (e) => {
-  const btn = e.target.closest("button.close-pos");
-  if (btn) closePosition(btn.dataset.coin);
-});
+  acct("positions").onclick = (e) => {
+    const btn = e.target.closest("button.close-pos");
+    if (btn) closePosition(btn.dataset.coin);
+  };
+}
 
 renderTradePane();

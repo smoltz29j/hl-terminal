@@ -47,6 +47,8 @@ const state = {
   ws: null,
   wsReady: false,
   reconnectDelay: 1000,
+  lastWsMsg: 0,          // WS 死活監視（最終受信時刻。60秒途絶で作り直す）
+  everConnected: false,  // 再接続判定（onopen で欠けた足を REST で取り直すか）
   szDecimals: {},        // coin -> size decimals
   maxLev: {},            // coin -> maxLeverage（レバレッジ変更 UI の上限）
   assetIds: {},          // coin -> asset id（meta.universe の元 index。発注に使用）
@@ -67,6 +69,21 @@ const PANE = new URLSearchParams(location.search).get("pane");
 const FRAMED = window.self !== window.top;
 
 const $ = (id) => document.getElementById(id);
+
+// ---------- 表示言語（JP/EN 切替。既定 JP） ----------
+// 動的文字列は T("日本語","English") をインラインで併記する方式（辞書キーの管理を避ける）。
+// 静的 HTML は日本語で書き、EN のときだけ applyLang() が差し替える。切替は reload。
+const LANG = (() => {
+  try { return localStorage.getItem("hlt-lang") === "en" ? "en" : "jp"; }
+  catch { return "jp"; }
+})();
+const T = (ja, en) => (LANG === "en" ? en : ja);
+
+// アカウント欄（Positions / Open Orders）は2画面時は duo.html 下段の共有 footer に
+// 1つだけ描画する（ティッカーと同じ「左ペインが供給役」方式）。右ペインは
+// ポーリング・描画とも行わず、発注後の更新は左ペインへ依頼する（refreshAccount 参照）
+const ACCT_ON = PANE !== "2";
+const acct = (id) => (FRAMED ? window.top.document.getElementById(id) : $(id));
 
 // ---------- formatting ----------
 
@@ -159,7 +176,7 @@ function setCoinOptions(names, selected) {
   sel.innerHTML = "";
   if (!names.length) {
     const opt = document.createElement("option");
-    opt.textContent = "該当なし";
+    opt.textContent = T("該当なし", "No match");
     opt.disabled = true;
     opt.selected = true;
     sel.appendChild(opt);
@@ -617,16 +634,24 @@ function computeTlSignals(segs, hs, ls, cs, t) {
         let s200 = 0;
         for (let i = cs.length - 200; i < cs.length; i++) s200 += cs[i];
         regime = cs[n1] < s200 / 200 ? "bear" : "bull";
-        regimeTag = regime === "bear" ? " · 弱気局面" : " · 強気局面(破断は騙し多め)";
+        regimeTag = regime === "bear"
+          ? T(" · 弱気局面", " · bear regime")
+          : T(" · 強気局面(破断は騙し多め)", " · bull regime (breaks often fake)");
       }
-      let cls = "watch-calm", stage = "calm", txt = "監視中（▲/▼ 待ち）";
+      let cls = "watch-calm", stage = "calm", txt = T("監視中（▲/▼ 待ち）", "watching (awaiting ▲/▼)");
       if (liveDn >= 0 && n1 - liveDn <= 5) {
-        const ago = n1 - liveDn === 0 ? "本日" : `${n1 - liveDn}日前`;
-        cls = "watch-break"; stage = "break"; txt = `床破断 ▼ ${ago} — 過去2回はここから急落`;
+        const ago = n1 - liveDn === 0 ? T("本日", "today") : T(`${n1 - liveDn}日前`, `${n1 - liveDn}d ago`);
+        cls = "watch-break"; stage = "break";
+        txt = T(`床破断 ▼ ${ago} — 過去2回はここから急落`, `floor break ▼ ${ago} — last 2 crashes started here`);
       } else if (liveUp >= 0 && n1 - liveUp <= 15) {
-        cls = "watch-hot"; stage = "hot"; txt = `天井過熱 ▲ ${n1 - liveUp}日前 — 床破断(▼)を警戒`;
+        cls = "watch-hot"; stage = "hot";
+        txt = T(`天井過熱 ▲ ${n1 - liveUp}日前 — 床破断(▼)を警戒`, `ceiling heat ▲ ${n1 - liveUp}d ago — watch for floor break (▼)`);
       }
-      state.tlWatch = { cls, stage, regime, text: `パターン監視: ${d0.getMonth() + 1}/${d0.getDate()}〜 ${age}日目 · ${txt}${regimeTag}` };
+      state.tlWatch = {
+        cls, stage, regime,
+        text: T(`パターン監視: ${d0.getMonth() + 1}/${d0.getDate()}〜 ${age}日目 · ${txt}${regimeTag}`,
+                `Pattern watch: since ${d0.getMonth() + 1}/${d0.getDate()}, day ${age} · ${txt}${regimeTag}`),
+      };
     }
   }
   applyTlWatch();
@@ -700,10 +725,13 @@ function applyTlWatch() {
   const spot = demandDir(["bspot", "cspot"]);
   const perp = demandDir(["bperp"]);
   if (spot !== null && perp !== null) {
-    const lb = { "1": "買", "0": "中立", "-1": "売" };
-    text += ` · 実需5分: 現物${lb[spot]}/perp${lb[perp]}`;
+    const lb = LANG === "en"
+      ? { "1": "buy", "0": "flat", "-1": "sell" }
+      : { "1": "買", "0": "中立", "-1": "売" };
+    text += T(` · 実需5分: 現物${lb[spot]}/perp${lb[perp]}`, ` · 5m flow: spot ${lb[spot]}/perp ${lb[perp]}`);
     if (w.cls === "watch-break") {
-      text += spot > 0 ? "（⚠ 現物は買い — 騙しの可能性）" : spot < 0 ? "（現物も売り — 信頼度高）" : "";
+      text += spot > 0 ? T("（⚠ 現物は買い — 騙しの可能性）", " (⚠ spot buying — possible fakeout)")
+        : spot < 0 ? T("（現物も売り — 信頼度高）", " (spot selling too — high confidence)") : "";
     }
   }
   el.textContent = text;
@@ -730,10 +758,14 @@ function updateCrashAlert() {
   }
   state.alertLevel = lv;
   if (lv >= 2) {
-    const spotTxt = spot === null ? "" : spot > 0 ? " · 実需: 現物買い(騙し注意)" : spot < 0 ? " · 実需: 現物も売り" : " · 実需: 中立";
+    const spotTxt = spot === null ? ""
+      : spot > 0 ? T(" · 実需: 現物買い(騙し注意)", " · flow: spot buying (fakeout risk)")
+      : spot < 0 ? T(" · 実需: 現物も売り", " · flow: spot selling too")
+      : T(" · 実需: 中立", " · flow: neutral");
     el.textContent = lv >= 3
-      ? `🚨 急落警報 — 床破断▼ · 弱気局面${spotTxt}`
-      : `⚠ 急落警戒 — ${w.stage === "break" ? "床破断▼" : "天井過熱▲"}${spotTxt}`;
+      ? T(`🚨 急落警報 — 床破断▼ · 弱気局面${spotTxt}`, `🚨 Crash alert — floor break ▼ · bear regime${spotTxt}`)
+      : T(`⚠ 急落警戒 — ${w.stage === "break" ? "床破断▼" : "天井過熱▲"}${spotTxt}`,
+          `⚠ Crash warning — ${w.stage === "break" ? "floor break ▼" : "ceiling heat ▲"}${spotTxt}`);
     el.className = lv >= 3 ? "alert-3" : "alert-2";
     el.hidden = false;
   } else {
@@ -815,7 +847,7 @@ function renderChartLegend() {
   const items = [];
   if (IND_CFG.ma) for (const d of MA_DEFS) items.push([d.color, `MA ${d.period}`]);
   if (IND_CFG.bb) items.push([BB_DEF.color, `BB (${BB_DEF.period}, ${BB_DEF.mult}σ)`]);
-  if (IND_CFG.tl) items.push([TL_COLOR, "チャネル (自動)"], [TL_EXT_COLOR, "チャネル延長"]);
+  if (IND_CFG.tl) items.push([TL_COLOR, T("チャネル (自動)", "Channels (auto)")], [TL_EXT_COLOR, T("チャネル延長", "Channel ext.")]);
   const el = $("chart-legend");
   el.hidden = !items.length;
   el.innerHTML = items
@@ -1102,13 +1134,19 @@ function connect() {
   ws.onopen = () => {
     state.wsReady = true;
     state.reconnectDelay = 1000;
+    state.lastWsMsg = Date.now();
     $("conn").className = "up";
     for (const s of subs(state.coin, state.interval)) wsSend("subscribe", s);
     // ティッカー銘柄は常時購読（switchTo の unsubscribe 対象にしない）
     if (TICKER_ON) for (const t of TICKER_COINS) wsSend("subscribe", { type: "activeAssetCtx", coin: t.coin });
+    // 再接続時は切断中に欠けた足を REST で取り直す（欠けたまま WS 更新だけ再開すると
+    // チャートに穴が空き、追従も過去に置き去りになる）。初回接続はロード側で取得済み
+    if (state.everConnected) loadCandles().catch((e) => console.error("reload candles:", e));
+    state.everConnected = true;
   };
 
   ws.onmessage = (ev) => {
+    state.lastWsMsg = Date.now();
     const msg = JSON.parse(ev.data);
     switch (msg.channel) {
       case "l2Book":
@@ -1163,6 +1201,17 @@ setInterval(() => {
   if (state.wsReady) state.ws.send(JSON.stringify({ method: "ping" }));
 }, 45000);
 
+// WS の死活監視: スリープ復帰やネットワーク断で onclose が来ないままソケットが死ぬと、
+// 板は REST ポーリングで動き続けるのにチャート（candle/trades は WS のみ）だけ止まる。
+// l2Book スナップショットが約5秒間隔で必ず来るため、60秒無通信 = 死亡とみなして
+// 作り直す（close() → onclose → 指数バックオフ再接続 → onopen で candleSnapshot 再取得）
+setInterval(() => {
+  if (state.wsReady && Date.now() - (state.lastWsMsg ?? 0) > 60000) {
+    console.warn("WS silent for 60s — reconnecting");
+    try { state.ws.close(); } catch { /* already dead */ }
+  }
+}, 15000);
+
 // WS の l2Book snapshot は約5秒間隔でしか届かない（2026-07-15 実測: 公式/api-ui/api2 とも
 // 中央値 5.4s、nSigFigs 指定でも不変）。板の鮮度は REST ポーリング（weight 2/回・~34ms）で
 // 補い、WS 購読は切断時等のフォールバックとして維持する。古い方は renderBook の time
@@ -1196,6 +1245,13 @@ function signCls(n) { return Number(n) >= 0 ? "up" : "down"; }
 
 async function refreshAccount() {
   if (!state.user) return;
+  // 右ペインは共有テーブルを描画しない — 発注・キャンセル直後の更新は供給役（左ペイン）に頼む
+  if (!ACCT_ON) {
+    for (const w of Array.from(window.top.frames)) {
+      if (w !== window) { try { w.refreshAccount?.(); } catch { /* 相手ペイン初期化前 */ } }
+    }
+    return;
+  }
   const user = state.user;
   try {
     const [ch, orders] = await Promise.all([
@@ -1217,20 +1273,20 @@ function renderAccount(ch, orders) {
   const canTrade = typeof tradeReady === "function" && tradeReady();
   const upnl = positions.reduce((s, p) => s + Number(p.unrealizedPnl), 0);
 
-  $("ac-equity").textContent = fmtUsd2(ch.marginSummary.accountValue);
-  $("ac-withdraw").textContent = fmtUsd2(ch.withdrawable);
-  $("ac-margin").textContent = fmtUsd2(ch.marginSummary.totalMarginUsed);
-  const upEl = $("ac-upnl");
+  acct("ac-equity").textContent = fmtUsd2(ch.marginSummary.accountValue);
+  acct("ac-withdraw").textContent = fmtUsd2(ch.withdrawable);
+  acct("ac-margin").textContent = fmtUsd2(ch.marginSummary.totalMarginUsed);
+  const upEl = acct("ac-upnl");
   upEl.textContent = (upnl >= 0 ? "+" : "") + fmtUsd2(upnl);
   upEl.className = "value " + signCls(upnl);
 
-  $("positions").tBodies[0].innerHTML = positions.length
+  acct("positions").tBodies[0].innerHTML = positions.length
     ? positions.map((p) => {
         const sz = Number(p.szi);
         const mark = Math.abs(sz) > 0 ? Number(p.positionValue) / Math.abs(sz) : 0;
         const roe = (Number(p.returnOnEquity) * 100).toFixed(1);
         const close = canTrade && p.coin in state.assetIds
-          ? `<button class="close-pos" data-coin="${p.coin}" title="成行でクローズ（Reduce Only）">クローズ</button>` : "";
+          ? `<button class="close-pos" data-coin="${p.coin}" title="${T("成行でクローズ（Reduce Only）", "Market close (reduce only)")}">${T("クローズ", "Close")}</button>` : "";
         return `<tr>
           <td class="coin">${p.coin} <span class="tag">${p.leverage.value}x</span></td>
           <td class="${signCls(sz)}">${fmtNum(sz, state.szDecimals[p.coin] ?? 4)}</td>
@@ -1242,9 +1298,9 @@ function renderAccount(ch, orders) {
           <td>${close}</td>
         </tr>`;
       }).join("")
-    : `<tr><td class="empty" colspan="8">ポジションなし</td></tr>`;
+    : `<tr><td class="empty" colspan="8">${T("ポジションなし", "No positions")}</td></tr>`;
 
-  $("orders").tBodies[0].innerHTML = orders.length
+  acct("orders").tBodies[0].innerHTML = orders.length
     ? orders
         .slice()
         .sort((a, b) => b.timestamp - a.timestamp)
@@ -1255,9 +1311,9 @@ function renderAccount(ch, orders) {
           if (canTrade && o.coin in state.assetIds) {
             // 修正は通常の指値のみ（trigger/TPSL は未対応）
             if (!o.isTrigger && o.orderType === "Limit" && ["Gtc", "Alo", "Ioc"].includes(o.tif)) {
-              actions.push(`<button class="mod" data-oid="${o.oid}" title="注文修正（価格・数量）">変更</button>`);
+              actions.push(`<button class="mod" data-oid="${o.oid}" title="${T("注文修正（価格・数量）", "Modify order (price/size)")}">${T("変更", "Edit")}</button>`);
             }
-            actions.push(`<button class="cxl" data-coin="${o.coin}" data-oid="${o.oid}" title="注文キャンセル">取消</button>`);
+            actions.push(`<button class="cxl" data-coin="${o.coin}" data-oid="${o.oid}" title="${T("注文キャンセル", "Cancel order")}">${T("取消", "Cancel")}</button>`);
           }
           const cxl = actions.join(" ");
           return `<tr>
@@ -1270,7 +1326,7 @@ function renderAccount(ch, orders) {
             <td>${cxl}</td>
           </tr>`;
         }).join("")
-    : `<tr><td class="empty" colspan="7">注文なし</td></tr>`;
+    : `<tr><td class="empty" colspan="7">${T("注文なし", "No orders")}</td></tr>`;
 }
 
 function setUser(addr, source, fromSync = false) {
@@ -1294,19 +1350,22 @@ function setUser(addr, source, fromSync = false) {
     if (addr) {
       btn.textContent = addr.slice(0, 6) + "…" + addr.slice(-4);
       btn.classList.add("connected");
-      btn.title = addr + "（クリックで切断）";
+      btn.title = addr + T("（クリックで切断）", " (click to disconnect)");
     } else {
       btn.textContent = "Connect";
       btn.classList.remove("connected");
       btn.title = "";
     }
   }
-  if (addr) {
-    $("account").hidden = false;
-    refreshAccount();
-    state.acctTimer = setInterval(refreshAccount, 5000);
-  } else {
-    $("account").hidden = true;
+  // アカウント欄の表示とポーリングは供給役ペインのみ（2画面時の共有 footer は左ペインが描画）
+  if (ACCT_ON) {
+    if (addr) {
+      acct("account").hidden = false;
+      refreshAccount();
+      state.acctTimer = setInterval(refreshAccount, 5000);
+    } else {
+      acct("account").hidden = true;
+    }
   }
   if (typeof tradeOnUser === "function") tradeOnUser();
 }
@@ -1329,7 +1388,7 @@ function closeModal() {
 async function connectMetaMask() {
   const btn = $("cm-mm");
   btn.disabled = true;
-  btn.textContent = "接続待ち…";
+  btn.textContent = T("接続待ち…", "Connecting…");
   try {
     if (!mmsdk) {
       mmsdk = new MetaMaskSDK.MetaMaskSDK({
@@ -1354,7 +1413,7 @@ async function connectMetaMask() {
     console.error("MetaMask connect:", e);
   } finally {
     btn.disabled = false;
-    btn.textContent = "MetaMask で接続";
+    btn.textContent = T("MetaMask で接続", "Connect with MetaMask");
   }
 }
 
@@ -1364,12 +1423,12 @@ function disconnectWallet() {
 }
 
 function connectWatch() {
-  const addr = prompt("表示するアドレスを入力（ウォッチモード）:");
+  const addr = prompt(T("表示するアドレスを入力（ウォッチモード）:", "Enter address to watch:"));
   if (addr && /^0x[0-9a-fA-F]{40}$/.test(addr.trim())) {
     setUser(addr.trim().toLowerCase(), "watch");
     closeModal();
   } else if (addr) {
-    alert("アドレスの形式が不正です");
+    alert(T("アドレスの形式が不正です", "Invalid address format"));
   }
 }
 
@@ -1378,8 +1437,8 @@ $("wallet-btn").addEventListener("click", () => {
   else openModal();
 });
 // 2画面時のウォレット/設定ボタンは duo.html 最上段の共有コントロールに一本化
-// （クリックは左ペインへ委譲される）。ペイン内は1段目（#topbar-acct）ごと隠す。
-// 右ペインの Trade 欄からの接続は引き続き可能で、その場合も左に伝播する
+// （クリックは左ペインへ委譲される）。ペイン内は1段目（#topbar-acct）ごと隠し、
+// Trade 欄の未接続ゲートのボタンも出さない（trade.js 参照 — 接続導線は最上段の1個だけ）
 if (FRAMED) $("topbar-acct").hidden = true;
 $("cm-close").addEventListener("click", closeModal);
 $("connect-modal").addEventListener("click", (e) => { if (e.target.id === "connect-modal") closeModal(); });
@@ -1469,8 +1528,8 @@ for (const btn of document.querySelectorAll("#intervals button")) {
   const render = () => {
     // ペイン内では出さない（「1画面」は duo.html 最上段の共有ボタンにある）
     if (FRAMED) { btn.hidden = true; return; }
-    btn.textContent = "2画面";
-    btn.title = "左右2画面で別銘柄を表示";
+    btn.textContent = T("2画面", "Split");
+    btn.title = T("左右2画面で別銘柄を表示", "Show two panes side by side");
     btn.hidden = !pc.matches;
   };
   btn.addEventListener("click", () => {
@@ -1484,7 +1543,7 @@ for (const btn of document.querySelectorAll("#intervals button")) {
 // 2画面時: 片方のペインで API 接続先を変更・保存したら、もう片方も追従して再読込する
 // （storage イベントは他ウィンドウの変更でのみ発火するので、自分は二重 reload しない）
 window.addEventListener("storage", (e) => {
-  if (e.key === "hlt-api") location.reload();
+  if (e.key === "hlt-api" || e.key === "hlt-lang") location.reload();
 });
 
 // ---------- API settings modal ----------
@@ -1505,8 +1564,8 @@ function saveSettings() {
     cfg.http = $("api-http").value.trim();
     cfg.ws = $("api-ws").value.trim();
     cfg.mainnet = $("api-custom-mainnet").checked;
-    if (!/^https?:\/\/.+/.test(cfg.http)) { alert("HTTP URL の形式が不正です（例: https://api.example.com）"); return; }
-    if (cfg.ws && !/^wss?:\/\/.+/.test(cfg.ws)) { alert("WS URL の形式が不正です（例: wss://api.example.com/ws）"); return; }
+    if (!/^https?:\/\/.+/.test(cfg.http)) { alert(T("HTTP URL の形式が不正です（例: https://api.example.com）", "Invalid HTTP URL (e.g. https://api.example.com)")); return; }
+    if (cfg.ws && !/^wss?:\/\/.+/.test(cfg.ws)) { alert(T("WS URL の形式が不正です（例: wss://api.example.com/ws）", "Invalid WS URL (e.g. wss://api.example.com/ws)")); return; }
   }
   localStorage.setItem("hlt-api", JSON.stringify(cfg));
   location.reload(); // 接続・購読・アカウント状態を丸ごと作り直すため再読込が最も安全
@@ -1528,6 +1587,80 @@ function renderNetBadge() {
   }
 }
 
+// puppeteer 検証用の内部ハンドル（トップレベル const/let は window に乗らず外から見えないため。
+// UI・機能からは参照しないこと）
+window.__hlt = {
+  get chart() { return chart; },
+  get volChart() { return volChart; },
+  get candleSeries() { return candleSeries; },
+  state,
+};
+
+// ---------- 表示言語の適用と切替ボタン ----------
+
+// EN のときだけ静的 DOM の文言を差し替える（HTML の原文は日本語 = 既定）。
+// 動的に生成・更新される文字列は各所の T() が担当する
+function applyLang() {
+  document.documentElement.lang = LANG === "en" ? "en" : "ja";
+  const langBtn = $("lang-btn");
+  if (langBtn) {
+    // 表記は現在の言語（"JP" ⇔ "EN" の2状態で入れ替わる — ユーザー指定 2026-07-15）
+    langBtn.textContent = LANG === "en" ? "EN" : "JP";
+    langBtn.title = T("表示言語の切替", "Language");
+    langBtn.addEventListener("click", () => {
+      localStorage.setItem("hlt-lang", LANG === "en" ? "jp" : "en");
+      location.reload();
+    });
+  }
+  if (LANG !== "en") return;
+  const t = (sel, txt) => { const el = document.querySelector(sel); if (el) el.textContent = txt; };
+  const ttl = (sel, txt) => { const el = document.querySelector(sel); if (el) el.title = txt; };
+  // topbar
+  const cf = $("coin-filter");
+  cf.placeholder = "Search";
+  cf.title = "Filter symbols";
+  ttl("#coin-select", "Symbol");
+  ttl("#ind-ma", "Moving averages (20/50)");
+  ttl("#ind-bb", "Bollinger Bands (20, 2σ)");
+  ttl("#ind-tl", "Auto trend channels");
+  ttl("#settings-btn", "API endpoint settings");
+  ttl("#conn", "WebSocket status");
+  // 発注フォーム
+  t('#tf-side [data-side="buy"]', "Buy");
+  t('#tf-side [data-side="sell"]', "Sell");
+  t('#tf-type [data-type="limit"]', "Limit");
+  t('#tf-type [data-type="market"]', "Market");
+  t(".tf-lev-label", "Lev");
+  ttl("#tf-lev", "Leverage");
+  t("#tf-lev-set", "Set");
+  const rowLabels = document.querySelectorAll(".tf-rows .tf-row > span:first-child");
+  if (rowLabels[0]) rowLabels[0].textContent = "Price";
+  if (rowLabels[1]) rowLabels[1].textContent = "Size";
+  $("tf-px").placeholder = FRAMED ? "Price" : "0.0";
+  $("tf-sz").placeholder = FRAMED ? "Size" : "0.0";
+  // 設定モーダル
+  t("#settings-box h3", "API endpoint");
+  const names = [
+    "Official Mainnet",
+    "Official Testnet",
+    "Alt API-UI (official web-UI pool, separate rate limit)",
+    "Alt API2 (official alternate pool)",
+    "Custom (keyed third-party — Chainstack, QuickNode, etc.)",
+  ];
+  document.querySelectorAll("#settings-box .sm-name").forEach((n, i) => { if (names[i]) n.textContent = names[i]; });
+  $("api-ws").placeholder = "wss://api.example.com/ws (derived from HTTP if empty)";
+  t("#sm-custom-net-txt", " Mainnet data (used to pick the signing chain)");
+  t(".sm-note", "Saving reloads the page. The endpoint is stored in localStorage and works as a fallback during official API outages.");
+  t("#sm-cancel", "Cancel");
+  t("#sm-save", "Save & reload");
+  // 接続モーダル
+  t("#connect-box h3", "Connect Wallet");
+  t("#cm-mm", "Connect with MetaMask");
+  t("#cm-watch", "Enter address (watch mode)");
+  t("#cm-note", "Without the extension a QR code is shown — scan and approve in the MetaMask mobile app.");
+  ttl("#cm-close", "Close");
+}
+
 // ---------- boot ----------
 
 (async () => {
@@ -1536,6 +1669,7 @@ function renderNetBadge() {
     const saved = localStorage.getItem(`hlt-coin:p${PANE}`);
     if (saved) state.coin = saved;
   }
+  applyLang();
   setupChart();
   applyIndicatorVisibility();
   renderNetBadge();

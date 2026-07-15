@@ -19,7 +19,7 @@ if (window.self !== window.top) document.documentElement.classList.add("framed")
 </script>
 <!-- ?v= はキャッシュバスター。style.css / app.js / hl-sign.js / trade.js を変更したら
      ここの4箇所 + duo.html の style.css?v= も合わせて数字を上げる -->
-<link rel="stylesheet" href="style.css?v=14">
+<link rel="stylesheet" href="style.css?v=20">
 <script src="https://unpkg.com/lightweight-charts@4.2.3/dist/lightweight-charts.standalone.production.js"></script>
 <script src="https://unpkg.com/ethers@6.15.0/dist/ethers.umd.min.js"></script>
 <script src="metamask-sdk.bundle.js"></script>
@@ -31,6 +31,7 @@ if (window.self !== window.top) document.documentElement.classList.add("framed")
   <button id="wallet-btn">Connect</button>
   <button id="split-btn" hidden></button>
   <button id="settings-btn" title="API 接続先の設定">⚙</button>
+  <button id="lang-btn" title="表示言語の切替"></button>
 </header>
 <!-- 2段目: サブティッカー（スマホではマーキー、PC は固定表示） -->
 <div id="ticker" hidden></div>
@@ -96,8 +97,11 @@ if (window.self !== window.top) document.documentElement.classList.add("framed")
           </div>
           <button id="tf-lev-set">変更</button>
         </div>
-        <label class="tf-row"><span>価格</span><input id="tf-px" type="text" inputmode="decimal" placeholder="0.0" autocomplete="off"></label>
-        <label class="tf-row"><span>数量</span><input id="tf-sz" type="text" inputmode="decimal" placeholder="0.0" autocomplete="off"><span id="tf-coin" class="tf-unit"></span></label>
+        <!-- 2画面ペイン内（html.framed）では横並び+ラベル非表示になり、placeholder がラベル代わり -->
+        <div class="tf-rows">
+          <label class="tf-row"><span>価格</span><input id="tf-px" type="text" inputmode="decimal" placeholder="価格" autocomplete="off"></label>
+          <label class="tf-row"><span>数量</span><input id="tf-sz" type="text" inputmode="decimal" placeholder="数量" autocomplete="off"><span id="tf-coin" class="tf-unit"></span></label>
+        </div>
         <div class="tf-foot">
           <label id="tf-ro-row"><input type="checkbox" id="tf-ro"> Reduce Only</label>
           <span id="tf-notional"></span>
@@ -153,15 +157,16 @@ if (window.self !== window.top) document.documentElement.classList.add("framed")
 <div id="settings-modal" hidden>
   <div id="settings-box">
     <h3>API 接続先</h3>
-    <label class="sm-opt"><input type="radio" name="api-mode" value="mainnet" checked> 公式 Mainnet<span class="sm-url">api.hyperliquid.xyz</span></label>
-    <label class="sm-opt"><input type="radio" name="api-mode" value="testnet"> 公式 Testnet<span class="sm-url">api.hyperliquid-testnet.xyz</span></label>
-    <label class="sm-opt"><input type="radio" name="api-mode" value="api-ui"> 代替 API-UI（公式 Web UI 系・別レートリミット）<span class="sm-url">api-ui.hyperliquid.xyz</span></label>
-    <label class="sm-opt"><input type="radio" name="api-mode" value="api2"> 代替 API2（公式代替プール）<span class="sm-url">api2.hyperliquid.xyz</span></label>
-    <label class="sm-opt"><input type="radio" name="api-mode" value="custom"> カスタム（Chainstack/QuickNode 等キー付きサードパーティはこちら）</label>
+    <!-- 文言は EN 時に applyLang() が .sm-name / #sm-custom-net-txt を差し替える（radio を壊さないため span でラップ） -->
+    <label class="sm-opt"><input type="radio" name="api-mode" value="mainnet" checked> <span class="sm-name">公式 Mainnet</span><span class="sm-url">api.hyperliquid.xyz</span></label>
+    <label class="sm-opt"><input type="radio" name="api-mode" value="testnet"> <span class="sm-name">公式 Testnet</span><span class="sm-url">api.hyperliquid-testnet.xyz</span></label>
+    <label class="sm-opt"><input type="radio" name="api-mode" value="api-ui"> <span class="sm-name">代替 API-UI（公式 Web UI 系・別レートリミット）</span><span class="sm-url">api-ui.hyperliquid.xyz</span></label>
+    <label class="sm-opt"><input type="radio" name="api-mode" value="api2"> <span class="sm-name">代替 API2（公式代替プール）</span><span class="sm-url">api2.hyperliquid.xyz</span></label>
+    <label class="sm-opt"><input type="radio" name="api-mode" value="custom"> <span class="sm-name">カスタム（Chainstack/QuickNode 等キー付きサードパーティはこちら）</span></label>
     <div id="sm-custom">
       <input id="api-http" type="text" placeholder="https://api.example.com" autocomplete="off">
       <input id="api-ws" type="text" placeholder="wss://api.example.com/ws（空欄なら HTTP から導出）" autocomplete="off">
-      <label id="sm-custom-net"><input type="checkbox" id="api-custom-mainnet" checked> Mainnet のデータ（署名のチェーン判定に使用）</label>
+      <label id="sm-custom-net"><input type="checkbox" id="api-custom-mainnet" checked><span id="sm-custom-net-txt"> Mainnet のデータ（署名のチェーン判定に使用）</span></label>
     </div>
     <p class="sm-note">保存するとページを再読込します。接続先は localStorage に保存され、公式 API 障害時のフォールバックに使えます。</p>
     <div class="sm-actions">
@@ -183,8 +188,8 @@ if (window.self !== window.top) document.documentElement.classList.add("framed")
   </div>
 </div>
 
-<script src="app.js?v=14"></script>
-<script src="hl-sign.js?v=14"></script>
-<script src="trade.js?v=14"></script>
+<script src="app.js?v=20"></script>
+<script src="hl-sign.js?v=20"></script>
+<script src="trade.js?v=20"></script>
 </body>
 </html>
