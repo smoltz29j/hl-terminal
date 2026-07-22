@@ -1247,6 +1247,32 @@ function fmtAnyPx(x) {
 
 function signCls(n) { return Number(n) >= 0 ? "up" : "down"; }
 
+// Spot 評価用: トークン名 → USDC 建てペア名（"@N"）。spotMeta は不変なので初回のみ取得してキャッシュ
+let spotPairs = null;
+async function loadSpotPairs() {
+  const meta = await info({ type: "spotMeta" });
+  const tokName = {};
+  for (const t of meta.tokens) tokName[t.index] = t.name;
+  const pairs = {};
+  for (const p of meta.universe) {
+    const [b, q] = p.tokens;
+    if (tokName[q] === "USDC" && !(tokName[b] in pairs)) pairs[tokName[b]] = p.name;
+  }
+  return pairs;
+}
+
+// Spot 口座の USDC 建て評価額（USDC + 各トークン × USDC 建てペアの mid）。取得失敗時は null
+function spotEquity(spot, mids) {
+  if (!spot) return null;
+  let total = 0;
+  for (const b of spot.balances) {
+    const amt = Number(b.total);
+    if (!amt) continue;
+    total += b.coin === "USDC" ? amt : amt * Number(mids?.[spotPairs?.[b.coin]] || 0);
+  }
+  return total;
+}
+
 async function refreshAccount() {
   if (!state.user) return;
   // 右ペインは共有テーブルを描画しない — 発注・キャンセル直後の更新は供給役（左ペイン）に頼む
@@ -1258,29 +1284,44 @@ async function refreshAccount() {
   }
   const user = state.user;
   try {
-    const [ch, orders] = await Promise.all([
+    // 入金は Spot USDC に着金する（2026-07 実測）ため perp だけでは総資産が $0 に見える —
+    // spot 残高も取得して合算する。spot 側の失敗は catch(null) で perp 表示を巻き込まない
+    const [ch, orders, spot, mids] = await Promise.all([
       info({ type: "clearinghouseState", user }),
       // openOrders ではなく frontend 版: 修正(batchModify)に必要な tif/reduceOnly/isTrigger が取れる
       info({ type: "frontendOpenOrders", user }),
+      info({ type: "spotClearinghouseState", user }).catch(() => null),
+      info({ type: "allMids" }).catch(() => null),
     ]);
+    if (spot && !spotPairs) {
+      try { spotPairs = await loadSpotPairs(); } catch { /* トークン評価は次周期に再試行 */ }
+    }
     if (user !== state.user) return; // switched/disconnected while in flight
     state.openOrders = orders;
-    renderAccount(ch, orders);
+    renderAccount(ch, orders, spotEquity(spot, mids));
   } catch (e) {
     console.error("account refresh failed:", e);
   }
 }
 
-function renderAccount(ch, orders) {
+function renderAccount(ch, orders, spotVal) {
   const positions = ch.assetPositions.map((p) => p.position);
   state.positions = positions;
   const canTrade = typeof tradeReady === "function" && tradeReady();
   const upnl = positions.reduce((s, p) => s + Number(p.unrealizedPnl), 0);
 
-  acct("ac-equity").textContent = fmtUsd2(ch.marginSummary.accountValue);
-  // 取引可能 = 総資産 − 使用中証拠金（新規建てに使える余力。withdrawable とは未実現損益等の扱いが違う）
-  acct("ac-avail").textContent = fmtUsd2(Math.max(0,
-    Number(ch.marginSummary.accountValue) - Number(ch.marginSummary.totalMarginUsed)));
+  // 総資産 = Perps + Spot 合算（内訳は tooltip）。Spot が取れないときは Perps のみ+注記
+  const perpVal = Number(ch.marginSummary.accountValue);
+  const eqEl = acct("ac-equity");
+  eqEl.textContent = fmtUsd2(perpVal + (spotVal ?? 0));
+  eqEl.title = spotVal == null
+    ? T("Spot 残高を取得できず — Perps のみの値", "Spot balance unavailable — perps only")
+    : T(`内訳: Perps ${fmtUsd2(perpVal)} + Spot ${fmtUsd2(spotVal)}`,
+        `Perps ${fmtUsd2(perpVal)} + spot ${fmtUsd2(spotVal)}`);
+  const spEl = acct("ac-spot");
+  if (spEl) spEl.textContent = spotVal == null ? "–" : fmtUsd2(spotVal);
+  // 取引可能 = Perps 総資産 − 使用中証拠金（新規建てに使える余力。withdrawable とは未実現損益等の扱いが違う）
+  acct("ac-avail").textContent = fmtUsd2(Math.max(0, perpVal - Number(ch.marginSummary.totalMarginUsed)));
   acct("ac-withdraw").textContent = fmtUsd2(ch.withdrawable);
   acct("ac-margin").textContent = fmtUsd2(ch.marginSummary.totalMarginUsed);
   state.withdrawable = Number(ch.withdrawable); // 出金 UI のデフォルト値・上限チェック用
@@ -1709,8 +1750,16 @@ function applyLang() {
   $("tf-px").placeholder = FRAMED ? "Price" : "0.0";
   $("tf-sz").placeholder = FRAMED ? "Size" : "0.0";
   // アカウント欄サマリ（1画面時。2画面の共有欄は duo.html のインラインスクリプトが担当）
-  const acctLabels = ["Equity", "Available to Trade", "Withdrawable", "Margin Used", "uPnL"];
-  document.querySelectorAll("#acct-summary .stat .label").forEach((n, i) => { if (acctLabels[i]) n.textContent = acctLabels[i]; });
+  const acctLabels = ["Equity", "Spot Balance", "Available to Trade", "Withdrawable", "Margin Used", "uPnL"];
+  const acctTitles = [null,
+    "Spot account value (USDC + tokens at mid) — included in Equity",
+    "Perps margin available for new positions (spot balance not included)",
+    "Withdrawable from the perps account (transfer spot funds on the official app)",
+    null, null];
+  document.querySelectorAll("#acct-summary .stat").forEach((n, i) => {
+    if (acctLabels[i]) n.querySelector(".label").textContent = acctLabels[i];
+    if (acctTitles[i]) n.title = acctTitles[i];
+  });
   t("#ac-deposit", "Deposit");
   ttl("#ac-deposit", "Send USDC on Arbitrum to the bridge (min 5 USDC)");
   t("#ac-withdraw-btn", "Withdraw");

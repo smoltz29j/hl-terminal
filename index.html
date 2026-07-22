@@ -19,7 +19,7 @@ if (window.self !== window.top) document.documentElement.classList.add("framed")
 </script>
 <!-- ?v= はキャッシュバスター。style.css / app.js / hl-sign.js / trade.js を変更したら
      ここの4箇所 + duo.html の style.css?v= も合わせて数字を上げる -->
-<link rel="stylesheet" href="style.css?v=27">
+<link rel="stylesheet" href="style.css?v=28">
 <script src="https://unpkg.com/lightweight-charts@4.2.3/dist/lightweight-charts.standalone.production.js"></script>
 <script src="https://unpkg.com/ethers@6.15.0/dist/ethers.umd.min.js"></script>
 <script src="metamask-sdk.bundle.js"></script>
@@ -131,8 +131,9 @@ if (window.self !== window.top) document.documentElement.classList.add("framed")
   <footer id="account" hidden>
   <div id="acct-summary">
     <div class="stat"><span class="label">総資産</span><span id="ac-equity" class="value">–</span></div>
-    <div class="stat"><span class="label">取引可能</span><span id="ac-avail" class="value">–</span></div>
-    <div class="stat"><span class="label">引き出し可能</span><span id="ac-withdraw" class="value">–</span></div>
+    <div class="stat" title="Spot 口座の評価額（USDC + トークン時価）。総資産に合算されます"><span class="label">Spot 残高</span><span id="ac-spot" class="value">–</span></div>
+    <div class="stat" title="Perps 口座の新規建て余力（Spot 残高は含まず）"><span class="label">取引可能</span><span id="ac-avail" class="value">–</span></div>
+    <div class="stat" title="Perps 口座からの出金可能額（Spot 残高の移動は公式アプリから）"><span class="label">引き出し可能</span><span id="ac-withdraw" class="value">–</span></div>
     <div class="stat"><span class="label">証拠金使用中</span><span id="ac-margin" class="value">–</span></div>
     <div class="stat"><span class="label">未実現損益</span><span id="ac-upnl" class="value">–</span></div>
     <!-- 入出金は MetaMask 接続時のみ表示（ウォッチモードでは署名できない）。処理は trade.js -->
@@ -208,8 +209,8 @@ if (window.self !== window.top) document.documentElement.classList.add("framed")
   </div>
 </div>
 
-<script src="app.js?v=27"></script>
-<script src="hl-sign.js?v=27"></script>
-<script src="trade.js?v=27"></script>
+<script src="app.js?v=28"></script>
+<script src="hl-sign.js?v=28"></script>
+<script src="trade.js?v=28"></script>
 </body>
 </html>

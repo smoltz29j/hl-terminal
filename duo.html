@@ -7,7 +7,7 @@
 <link rel="icon" href="data:,">
 <!-- style.css を link し、#topbar / #wallet-btn / #split-btn / #settings-btn / #ticker の
      id を本体とあえて同じにして見た目を共有する（別ドキュメントなので id 重複にはならない） -->
-<link rel="stylesheet" href="style.css?v=27">
+<link rel="stylesheet" href="style.css?v=28">
 <style>
   html, body { height: 100%; }
   #wrap { flex: 1; display: flex; min-height: 0; }
@@ -39,8 +39,9 @@
 <footer id="account" hidden>
   <div id="acct-summary">
     <div class="stat"><span class="label">総資産</span><span id="ac-equity" class="value">–</span></div>
-    <div class="stat"><span class="label">取引可能</span><span id="ac-avail" class="value">–</span></div>
-    <div class="stat"><span class="label">引き出し可能</span><span id="ac-withdraw" class="value">–</span></div>
+    <div class="stat" title="Spot 口座の評価額（USDC + トークン時価）。総資産に合算されます"><span class="label">Spot 残高</span><span id="ac-spot" class="value">–</span></div>
+    <div class="stat" title="Perps 口座の新規建て余力（Spot 残高は含まず）"><span class="label">取引可能</span><span id="ac-avail" class="value">–</span></div>
+    <div class="stat" title="Perps 口座からの出金可能額（Spot 残高の移動は公式アプリから）"><span class="label">引き出し可能</span><span id="ac-withdraw" class="value">–</span></div>
     <div class="stat"><span class="label">証拠金使用中</span><span id="ac-margin" class="value">–</span></div>
     <div class="stat"><span class="label">未実現損益</span><span id="ac-upnl" class="value">–</span></div>
     <!-- 入出金は MetaMask 接続時のみ表示。クリック処理は左ペインの trade.js（onclick 代入） -->
@@ -76,8 +77,16 @@ if (LANG === "en") {
   sp.textContent = "Single";
   sp.title = "Back to single view";
   document.getElementById("settings-btn").title = "API endpoint settings";
-  const acctLabels = ["Equity", "Available to Trade", "Withdrawable", "Margin Used", "uPnL"];
-  document.querySelectorAll("#acct-summary .stat .label").forEach((n, i) => { if (acctLabels[i]) n.textContent = acctLabels[i]; });
+  const acctLabels = ["Equity", "Spot Balance", "Available to Trade", "Withdrawable", "Margin Used", "uPnL"];
+  const acctTitles = [null,
+    "Spot account value (USDC + tokens at mid) — included in Equity",
+    "Perps margin available for new positions (spot balance not included)",
+    "Withdrawable from the perps account (transfer spot funds on the official app)",
+    null, null];
+  document.querySelectorAll("#acct-summary .stat").forEach((n, i) => {
+    if (acctLabels[i]) n.querySelector(".label").textContent = acctLabels[i];
+    if (acctTitles[i]) n.title = acctTitles[i];
+  });
   const dep = document.getElementById("ac-deposit");
   dep.textContent = "Deposit";
   dep.title = "Send USDC on Arbitrum to the bridge (min 5 USDC)";
