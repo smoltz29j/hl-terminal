@@ -19,7 +19,7 @@ if (window.self !== window.top) document.documentElement.classList.add("framed")
 </script>
 <!-- ?v= はキャッシュバスター。style.css / app.js / hl-sign.js / trade.js を変更したら
      ここの4箇所 + duo.html の style.css?v= も合わせて数字を上げる -->
-<link rel="stylesheet" href="style.css?v=26">
+<link rel="stylesheet" href="style.css?v=27">
 <script src="https://unpkg.com/lightweight-charts@4.2.3/dist/lightweight-charts.standalone.production.js"></script>
 <script src="https://unpkg.com/ethers@6.15.0/dist/ethers.umd.min.js"></script>
 <script src="metamask-sdk.bundle.js"></script>
@@ -160,6 +160,20 @@ if (window.self !== window.top) document.documentElement.classList.add("framed")
   </footer>
 </main>
 
+<!-- 入出金ダイアログ（prompt/confirm はフォント・色を指定できないためモーダル化 — 2026-07-22）。
+     文言・ボタンラベルは trade.js の xferDialog() が呼び出しごとに T() で設定する -->
+<div id="xfer-modal" hidden>
+  <div id="xfer-box">
+    <h3 id="xm-title"></h3>
+    <div id="xm-body"></div>
+    <input id="xm-input" type="text" inputmode="decimal" autocomplete="off" hidden>
+    <div class="sm-actions">
+      <button id="xm-cancel"></button>
+      <button id="xm-ok"></button>
+    </div>
+  </div>
+</div>
+
 <div id="settings-modal" hidden>
   <div id="settings-box">
     <h3>API 接続先</h3>
@@ -194,8 +208,8 @@ if (window.self !== window.top) document.documentElement.classList.add("framed")
   </div>
 </div>
 
-<script src="app.js?v=26"></script>
-<script src="hl-sign.js?v=26"></script>
-<script src="trade.js?v=26"></script>
+<script src="app.js?v=27"></script>
+<script src="hl-sign.js?v=27"></script>
+<script src="trade.js?v=27"></script>
 </body>
 </html>

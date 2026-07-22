@@ -482,6 +482,45 @@ main:has(#account:not([hidden])) { grid-template-rows: 2fr 1fr; }
 .sm-actions button:hover { border-color: var(--muted); }
 #sm-save { font-weight: 600; }
 
+/* ---------- 入出金モーダル（フォント大きめ・出金可能額は売り色の赤） ---------- */
+#xfer-modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10;
+}
+#xfer-box {
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+  padding: 20px 22px;
+  width: 400px;
+  max-width: calc(100vw - 32px);
+  font-size: 15px;
+}
+#xfer-box h3 { margin: 0 0 12px; font-size: 17px; }
+#xm-body { line-height: 1.8; overflow-wrap: break-word; }
+#xm-body .xm-wd { color: var(--sell); font-weight: 700; font-size: 17px; }
+#xm-body .xm-danger { color: var(--sell); font-weight: 700; }
+#xm-body .xm-addr { font-size: 13px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+#xm-input {
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--surface-2);
+  color: var(--ink);
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font: inherit;
+  font-size: 18px;
+  margin: 12px 0 14px;
+}
+#xfer-box .sm-actions button { font-size: 14px; }
+#xm-ok { font-weight: 600; }
+
 /* ---------- connect modal ---------- */
 #connect-modal[hidden] { display: none; }
 #connect-modal {

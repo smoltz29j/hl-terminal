@@ -388,16 +388,50 @@ function xferReady() {
   return !!(state.user && state.userSource === "mm" && mmProvider);
 }
 
+// 入出金用モーダル（prompt/confirm はフォント・色を弄れないため自前 — ユーザー要望 2026-07-22）。
+// input を渡すと入力ダイアログ（入力文字列 or null を返す）、省略で確認ダイアログ（true or null）。
+// html には数値・自前文言・アドレスのみ入れること（ユーザー入力を埋め込まない）
+function xferDialog({ title, html, input = null, okLabel }) {
+  return new Promise((resolve) => {
+    const modal = $("xfer-modal");
+    const inp = $("xm-input");
+    $("xm-title").textContent = title;
+    $("xm-body").innerHTML = html;
+    $("xm-ok").textContent = okLabel || "OK";
+    $("xm-cancel").textContent = T("キャンセル", "Cancel");
+    inp.hidden = input === null;
+    inp.value = input ?? "";
+    modal.hidden = false;
+    const done = (v) => {
+      modal.hidden = true;
+      document.removeEventListener("keydown", onKey);
+      resolve(v);
+    };
+    const onKey = (e) => {
+      if (e.key === "Escape") done(null);
+      else if (e.key === "Enter") done(input === null ? true : inp.value);
+    };
+    $("xm-ok").onclick = () => done(input === null ? true : inp.value);
+    $("xm-cancel").onclick = () => done(null);
+    modal.onclick = (e) => { if (e.target === modal) done(null); };
+    document.addEventListener("keydown", onKey);
+    if (input !== null) { inp.focus(); inp.select(); }
+  });
+}
+
 async function withdrawFunds() {
   if (trade.busy || !xferReady()) return;
   try {
     const wd = state.withdrawable;
-    const amtIn = prompt(
-      T(`出金額（USDC）を入力:\n出金可能額 ${wd} USDC / 最小 ${MIN_WITHDRAW} / 手数料 ${WITHDRAW_FEE} USDC（額から差し引き）`,
-        `Withdraw amount (USDC):\nWithdrawable ${wd} USDC / min ${MIN_WITHDRAW} / fee ${WITHDRAW_FEE} USDC (deducted from amount)`),
-      wd > 0 ? String(wd) : "");
+    const amtIn = await xferDialog({
+      title: T("出金 — Hyperliquid → Arbitrum", "Withdraw — Hyperliquid → Arbitrum"),
+      html: T(`出金可能額: <span class="xm-wd">${wd} USDC</span><br>最小 ${MIN_WITHDRAW} USDC・手数料 ${WITHDRAW_FEE} USDC（出金額から差し引き）`,
+        `Withdrawable: <span class="xm-wd">${wd} USDC</span><br>Min ${MIN_WITHDRAW} USDC · fee ${WITHDRAW_FEE} USDC (deducted from amount)`),
+      input: wd > 0 ? String(wd) : "",
+      okLabel: T("次へ", "Next"),
+    });
     if (amtIn === null) return;
-    const amount = parsePositive(amtIn, T("出金額", "amount"));
+    const amount = Math.round(parsePositive(amtIn, T("出金額", "amount")) * 1e6) / 1e6; // USDC は 6 decimals
     if (amount < MIN_WITHDRAW) throw new Error(T(`最小出金額は ${MIN_WITHDRAW} USDC です`, `Minimum withdrawal is ${MIN_WITHDRAW} USDC`));
     if (amount - wd > 1e-9) throw new Error(T(`出金額 ${amount} USDC が出金可能額（${wd} USDC）を上回っています`, `Withdraw amount ${amount} USDC exceeds the withdrawable balance (${wd} USDC)`));
 
@@ -405,9 +439,14 @@ async function withdrawFunds() {
     // 書き換え不可 — ユーザー指示 2026-07-22。別アドレスへ送りたい場合は着金後に Arbitrum 上で送金する）
     const dest = state.user;
 
-    if (!confirm(T(
-      `${NET.isMainnet ? "【Mainnet — 実資金】\n" : ""}${amount} USDC を Arbitrum の自分のアドレス\n${dest}\nへ出金します（着金 ${amount - WITHDRAW_FEE} USDC・3〜7分）。よろしいですか？`,
-      `${NET.isMainnet ? "[Mainnet — real funds]\n" : ""}Withdraw ${amount} USDC to your own address\n${dest}\non Arbitrum (you receive ${amount - WITHDRAW_FEE} USDC, 3–7 min). OK?`))) return;
+    const okc = await xferDialog({
+      title: T("出金の確認", "Confirm withdrawal"),
+      html: (NET.isMainnet ? `<div class="xm-danger">${T("【Mainnet — 実資金】", "[Mainnet — real funds]")}</div>` : "")
+        + T(`<b>${amount} USDC</b> を自分のアドレスへ出金します<br><span class="xm-addr">${dest}</span><br>着金 ${HLSign.floatToWire(amount - WITHDRAW_FEE)} USDC・3〜7分`,
+            `Withdraw <b>${amount} USDC</b> to your own address<br><span class="xm-addr">${dest}</span><br>You receive ${HLSign.floatToWire(amount - WITHDRAW_FEE)} USDC · 3–7 min`),
+      okLabel: T("出金する", "Withdraw"),
+    });
+    if (!okc) return;
 
     trade.busy = true;
     tradeStatus(T("MetaMask で出金の署名待ち…", "Waiting for MetaMask signature…"));
@@ -458,17 +497,26 @@ async function depositFunds() {
       bal = Number(BigInt(res)) / 1e6;
     } catch (e) { console.warn("USDC balanceOf:", e); }
 
-    const amtIn = prompt(
-      T(`入金額（USDC）: 最小 ${MIN_DEPOSIT}${bal != null ? ` / ウォレット残高 ${bal}` : ""}\n⚠ ${MIN_DEPOSIT} USDC 未満の入金は没収されます（native USDC のみ）`,
-        `Deposit amount (USDC): min ${MIN_DEPOSIT}${bal != null ? ` / wallet balance ${bal}` : ""}\n⚠ Deposits under ${MIN_DEPOSIT} USDC are forfeited (native USDC only)`), "");
+    const amtIn = await xferDialog({
+      title: T("入金 — Arbitrum → Hyperliquid", "Deposit — Arbitrum → Hyperliquid"),
+      html: T(`ウォレット残高: <b>${bal != null ? bal + " USDC" : "取得できず"}</b><br><span class="xm-danger">最小 ${MIN_DEPOSIT} USDC — 未満の入金は没収されます</span>（native USDC のみ）`,
+        `Wallet balance: <b>${bal != null ? bal + " USDC" : "unavailable"}</b><br><span class="xm-danger">Min ${MIN_DEPOSIT} USDC — smaller deposits are forfeited</span> (native USDC only)`),
+      input: "",
+      okLabel: T("次へ", "Next"),
+    });
     if (amtIn === null) return;
-    const amount = parsePositive(amtIn, T("入金額", "amount"));
+    const amount = Math.round(parsePositive(amtIn, T("入金額", "amount")) * 1e6) / 1e6; // USDC は 6 decimals
     if (amount < MIN_DEPOSIT) throw new Error(T(`最小入金額は ${MIN_DEPOSIT} USDC です（未満はブリッジに没収されます）`, `Minimum deposit is ${MIN_DEPOSIT} USDC (smaller amounts are forfeited)`));
     if (bal != null && amount - bal > 1e-9) throw new Error(T(`ウォレットの USDC 残高（${bal}）を超えています`, `Exceeds wallet USDC balance (${bal})`));
 
-    if (!confirm(T(
-      `${NET.isMainnet ? "【Mainnet — 実資金】\n" : ""}${B.chainName} の USDC ${amount} を Hyperliquid ブリッジ\n${B.bridge}\nへ送金します。約1分で残高に反映されます。よろしいですか？`,
-      `${NET.isMainnet ? "[Mainnet — real funds]\n" : ""}Send ${amount} USDC on ${B.chainName} to the Hyperliquid bridge\n${B.bridge}\nCredited in about 1 minute. OK?`))) return;
+    const okc = await xferDialog({
+      title: T("入金の確認", "Confirm deposit"),
+      html: (NET.isMainnet ? `<div class="xm-danger">${T("【Mainnet — 実資金】", "[Mainnet — real funds]")}</div>` : "")
+        + T(`${B.chainName} の <b>${amount} USDC</b> を Hyperliquid ブリッジへ送金します<br><span class="xm-addr">${B.bridge}</span><br>約1分で残高に反映されます`,
+            `Send <b>${amount} USDC</b> on ${B.chainName} to the Hyperliquid bridge<br><span class="xm-addr">${B.bridge}</span><br>Credited in about 1 minute`),
+      okLabel: T("入金する", "Deposit"),
+    });
+    if (!okc) return;
 
     tradeStatus(T("MetaMask で送金の承認待ち…", "Waiting for MetaMask confirmation…"));
     const units = BigInt(Math.round(amount * 1e6)); // USDC は 6 decimals
