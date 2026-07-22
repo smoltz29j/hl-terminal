@@ -7,7 +7,7 @@
 <link rel="icon" href="data:,">
 <!-- style.css を link し、#topbar / #wallet-btn / #split-btn / #settings-btn / #ticker の
      id を本体とあえて同じにして見た目を共有する（別ドキュメントなので id 重複にはならない） -->
-<link rel="stylesheet" href="style.css?v=20">
+<link rel="stylesheet" href="style.css?v=24">
 <style>
   html, body { height: 100%; }
   #wrap { flex: 1; display: flex; min-height: 0; }
@@ -38,10 +38,16 @@
      app.js は FRAMED 時に window.top.document のこちらへ描画する -->
 <footer id="account" hidden>
   <div id="acct-summary">
-    <div class="stat"><span class="label">Equity</span><span id="ac-equity" class="value">–</span></div>
-    <div class="stat"><span class="label">Withdrawable</span><span id="ac-withdraw" class="value">–</span></div>
-    <div class="stat"><span class="label">Margin Used</span><span id="ac-margin" class="value">–</span></div>
-    <div class="stat"><span class="label">uPnL</span><span id="ac-upnl" class="value">–</span></div>
+    <div class="stat"><span class="label">総資産</span><span id="ac-equity" class="value">–</span></div>
+    <div class="stat"><span class="label">取引可能</span><span id="ac-avail" class="value">–</span></div>
+    <div class="stat"><span class="label">引き出し可能</span><span id="ac-withdraw" class="value">–</span></div>
+    <div class="stat"><span class="label">証拠金使用中</span><span id="ac-margin" class="value">–</span></div>
+    <div class="stat"><span class="label">未実現損益</span><span id="ac-upnl" class="value">–</span></div>
+    <!-- 入出金は MetaMask 接続時のみ表示。クリック処理は左ペインの trade.js（onclick 代入） -->
+    <div id="acct-xfer" hidden>
+      <button id="ac-deposit" title="Arbitrum の USDC をブリッジへ送金して入金（最小 5 USDC）">入金</button>
+      <button id="ac-withdraw-btn" title="USDC を Arbitrum へ出金（手数料 1 USDC）">出金</button>
+    </div>
   </div>
   <div id="acct-tables">
     <section>
@@ -70,6 +76,14 @@ if (LANG === "en") {
   sp.textContent = "Single";
   sp.title = "Back to single view";
   document.getElementById("settings-btn").title = "API endpoint settings";
+  const acctLabels = ["Equity", "Available to Trade", "Withdrawable", "Margin Used", "uPnL"];
+  document.querySelectorAll("#acct-summary .stat .label").forEach((n, i) => { if (acctLabels[i]) n.textContent = acctLabels[i]; });
+  const dep = document.getElementById("ac-deposit");
+  dep.textContent = "Deposit";
+  dep.title = "Send USDC on Arbitrum to the bridge (min 5 USDC)";
+  const wdb = document.getElementById("ac-withdraw-btn");
+  wdb.textContent = "Withdraw";
+  wdb.title = "Withdraw USDC to Arbitrum (fee 1 USDC)";
 }
 {
   const lb = document.getElementById("lang-btn");

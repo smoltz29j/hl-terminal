@@ -9,17 +9,21 @@ Hyperliquid の独自フロントエンド「HL Terminal」。リアルタイム
 ## 実行
 
 ```
-./run.sh [port]   # デフォルト 8010。python3 http.server で 0.0.0.0 に配信
+./run.sh [port]   # デフォルト 8010。serve.py（certs/ があれば https、無ければ http）で 0.0.0.0 に配信
 ```
 
-elwhite (192.168.101.201) 上で動かし、LAN のブラウザから `http://192.168.101.201:8010/` で開く想定。ビルド・テスト・lint は無し。ufw は 8010/tcp を 192.168.101.0/24 に対して許可済み（2026-07-11）。
+elwhite (192.168.101.201) 上で動かし、LAN のブラウザから **`https://192.168.101.201:8010/`** で開く想定（2026-07-22 に https 化 — LAN 上の JS 改ざん対策）。ビルド・テスト・lint は無し。ufw は 8010/tcp を 192.168.101.0/24 に対して許可済み（2026-07-11。https 化はポート不変なので追加ルール不要。**実需 wss の 8766 は要 ufw 許可**）。
 
-本番は systemd ユーザーユニット `hl-terminal.service`（`~/.config/systemd/user/`、Restart=always・linger 有効）で常駐。再起動は `systemctl --user restart hl-terminal`。run.sh は手元試験用。実需フィードの `btc-demand.service`（port 8765、crypto_analysis）も同様にユニット化済み。
+- **TLS 証明書**: mkcert（`~/.local/bin/mkcert`、CA は `~/.local/share/mkcert/`）のローカル CA 発行。`certs/cert.pem|key.pem`（SAN: 192.168.101.201 / elwhite / elwhite.local / localhost / 127.0.0.1、**2028-10 期限** — 切れたら certs/ で `mkcert -cert-file cert.pem -key-file key.pem 192.168.101.201 elwhite elwhite.local localhost 127.0.0.1` を再実行して restart）。`certs/` は .gitignore 済み（**秘密鍵をリポジトリに入れない**）。
+- **クライアント側の信頼**: CA 未導入デバイスは警告を1回通せば使える。警告を消すには `https://192.168.101.201:8010/certs/rootCA.pem` をダウンロードして各デバイスにインストール（iPhone: プロファイルインストール→「証明書信頼設定」で完全信頼、Windows: 「信頼されたルート証明機関」へ、elwhite の Chrome: `libnss3-tools` を入れて `mkcert -install`）。rootCA.pem は公開鍵のみなので配布可。
+- **実需フィード連携**: https ページから平文 `ws://:8765` は mixed content でブロックされるため、realtime_demand サーバーに **wss リスナー（8766、同じ証明書）** を追加済み（server.py の `--ssl-cert/--ssl-key/--ssl-port`。8765 平文は自身のダッシュボード用に併存）。app.js の `DEMAND_URL` はページが https なら wss:8766 を自動選択。
+
+本番は systemd ユーザーユニット `hl-terminal.service`（`~/.config/systemd/user/`、Restart=always・linger 有効）で常駐。再起動は `systemctl --user restart hl-terminal`。run.sh は手元試験用。実需フィードの `btc-demand.service`（port 8765+wss 8766、crypto_analysis）も同様にユニット化済み。
 
 ## アーキテクチャ
 
 - フロントは `index.html` / `style.css` / `app.js`（相場・アカウント・設定）/ `hl-sign.js`（署名）/ `trade.js`（発注 UI）+ `metamask-sdk.bundle.js`（後述のビルド成果物）。全て classic script で、app.js のトップレベル変数（`state`・`NET` 等）を後続の trade.js が直接参照する（読み込み順を変えないこと）。
-- ウォレット接続は **MetaMask SDK**（`@metamask/sdk` 0.34.0）。拡張があればそれを使い、無ければ SDK 純正モーダルが QR を表示 → スマホの MetaMask アプリでスキャン・承認すると本セッションが張られる（app.hyperliquid.xyz と同じ UX。通信は MetaMask のリレーサーバー経由なので LAN http でも動く）。セッションは localStorage に永続化され、2回目以降は QR なしで再接続。切断は `mmsdk.terminate()`。WalletConnect は projectId 登録が必要なため不採用。自前 QR ペアリング方式（pair.html + server.py API）も過去に実装したが「アドレスを渡すだけで本接続ではない」ため撤去済み。
+- ウォレット接続は **MetaMask SDK**（`@metamask/sdk` 0.34.0）。拡張があればそれを使い、無ければ SDK 純正モーダルが QR を表示 → スマホの MetaMask アプリでスキャン・承認すると本セッションが張られる（app.hyperliquid.xyz と同じ UX。通信は MetaMask のリレーサーバー経由なので LAN http でも動く）。セッションは localStorage に永続化され、2回目以降は QR なしで再接続。切断は `mmsdk.terminate()`。**接続状態自体も localStorage `hlt-user` に保存し、起動時に `restoreWallet()` が復元**（1画面⇔2画面切替はページ遷移なので、これが無いと毎回切断される — 2026-07-22 修正）。復元は承認 UI を出さない `eth_accounts` で行い、セッションが死んでいれば保存を破棄して未接続に戻す。SDK 再接続は供給役（1画面/左ペイン）のみ、右ペインは表示+agent 鍵のみ復元。ウォッチモードも復元対象だが `?user=` クエリは保存しない（テスト用の一時表示）。WalletConnect は projectId 登録が必要なため不採用。自前 QR ペアリング方式（pair.html + server.py API）も過去に実装したが「アドレスを渡すだけで本接続ではない」ため撤去済み。
 - `metamask-sdk.bundle.js` は `./build-sdk.sh` で生成する（npm の UMD ビルドが依存を外部グローバルに期待していて単体で動かないため、esbuild で自己完結バンドルしている）。**MetaMask SDK は ConsenSys 独自ライセンスで再配布不可のため、バンドルは .gitignore 済み・リポジトリに含めないこと。**
 - データ源は2系統（キー不要・CORS 許可済み）:
   - REST `POST /info` — 初期データ。`metaAndAssetCtxs`（銘柄一覧+出来高ソート。**元 index が発注用 asset id** → `state.assetIds`）、`candleSnapshot`（ローソク足の初期300本）。さらに**板は REST `l2Book` を1秒ポーリング**（`BOOK_POLL_MS`。WS の l2Book snapshot は全公式エンドポイントで約5秒間隔しか来ないため — 2026-07-15 実測、nSigFigs 指定でも不変。タブ非表示中は停止、WS 側と renderBook の `state.bookTime` ガードで整合）。
@@ -47,6 +51,7 @@ elwhite (192.168.101.201) 上で動かし、LAN のブラウザから `http://19
   - 成行 = IOC 指値（mark±5%、有効数字5桁 + 小数 6-szDecimals 桁に丸め）。価格・サイズは `floatToWire()` で文字列化（Python SDK の float_to_wire と同一規則）。
   - Mainnet では送信前に confirm ダイアログ。agent 失効（"does not exist" 系エラー）時は鍵を破棄して再有効化を促す。
   - **hl-sign.js は Python SDK (signing.py) とバイト互換であることを検証済み**（eth_account との r/s/v 一致 + testnet 実サーバーの復元アドレス一致）。変更したら同じ検証を再実行すること（未承認のランダム agent 鍵で /exchange に投げると、エラー文中にサーバーが署名から復元したアドレスが出るので突き合わせられる）。
+- **入出金（trade.js）**: アカウント欄サマリ右端の 入金/出金 ボタン（`#acct-xfer`。MetaMask 接続時のみ表示 — agent 鍵・ウォッチモードでは署名できないため）。**出金** = user-signed action `withdraw3`（メインウォレットの EIP-712 署名 → /exchange。nonce = time フィールド。手数料 1 USDC・最小 2 USDC・Arbitrum へ 3〜7分。バイト互換は復元アドレス法で testnet 実サーバー検証済み 2026-07-22）。**入金** = MetaMask を Arbitrum へ `wallet_switchEthereumChain` で切替 → native USDC を Bridge2 コントラクトへ ERC-20 transfer（**最小 5 USDC — 未満は没収**。USDC.e 不可）。ブリッジ/USDC アドレス4件（mainnet=Arbitrum One / testnet=Arbitrum Sepolia）は trade.js の `BRIDGE` 定数 — 公式 docs の Bridge2 ページ原文と照合済み（2026-07-22）。**変更時は必ず docs と再照合すること（宛先を誤ると資金消失）。**
 - 接続は現状アドレス取得のみに使用（署名要求はしない）。アドレス手入力のウォッチモードあり。`?user=0x…` クエリでも起動可（puppeteer テストに便利）。アカウントデータは REST `clearinghouseState` + `openOrders` の5秒ポーリング（webData2 購読は応答が確認できなかったため不採用）。
 - 価格の表示桁 `state.pxDecimals` は API が返す文字列の小数桁から動的に導出（銘柄ごとに桁が違うため）。サイズ桁は meta の `szDecimals`。
 - lightweight-charts はエポックを UTC 表示するため、`TZ_SHIFT` でローカル時刻に見えるようずらしている。時刻を扱うときはこの補正を壊さないこと。

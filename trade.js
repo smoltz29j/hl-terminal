@@ -362,6 +362,133 @@ async function setLeverage() {
   }
 }
 
+// ---------- 入出金（Bridge2） ----------
+// 入金 = Arbitrum 上で native USDC をブリッジコントラクトへ ERC-20 transfer（MetaMask の通常 tx）。
+// 出金 = user-signed action withdraw3（メインウォレットの EIP-712 署名。agent 鍵では署名不可）。
+// アドレス4件は docs の Bridge2 ページ原文と突き合わせ済み（2026-07-22）。
+// ⚠ ブリッジは native USDC のみ受け付ける（USDC.e 不可）。最小入金 5 USDC 未満は返金されず消失。
+const BRIDGE = {
+  mainnet: {
+    chainId: "0xa4b1", chainName: "Arbitrum One",
+    bridge: "0x2df1c51e09aecf9cacb7bc98cb1742757f163df7",
+    usdc: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
+  },
+  testnet: {
+    chainId: "0x66eee", chainName: "Arbitrum Sepolia",
+    bridge: "0x08cfc1B6b2dCF36A1480b99353A354AA8AC56f89",
+    usdc: "0x1baAbB04529D43a73232B713C0FE471f7c7334d5",
+  },
+};
+const MIN_DEPOSIT = 5;    // USDC。未満はブリッジに没収される
+const MIN_WITHDRAW = 2;   // USDC
+const WITHDRAW_FEE = 1;   // USDC（バリデータが負担する Arbitrum ガス代の原資）
+
+// 入出金はメインウォレットの署名が要る = MetaMask 接続時のみ（agent 鍵・ウォッチ不可）
+function xferReady() {
+  return !!(state.user && state.userSource === "mm" && mmProvider);
+}
+
+async function withdrawFunds() {
+  if (trade.busy || !xferReady()) return;
+  try {
+    const wd = state.withdrawable;
+    const amtIn = prompt(
+      T(`出金額（USDC）:\n引き出し可能 ${wd} / 最小 ${MIN_WITHDRAW} / 手数料 ${WITHDRAW_FEE} USDC（額から差し引き）`,
+        `Withdraw amount (USDC):\nWithdrawable ${wd} / min ${MIN_WITHDRAW} / fee ${WITHDRAW_FEE} USDC (deducted from amount)`),
+      wd > 0 ? String(wd) : "");
+    if (amtIn === null) return;
+    const amount = parsePositive(amtIn, T("出金額", "amount"));
+    if (amount < MIN_WITHDRAW) throw new Error(T(`最小出金額は ${MIN_WITHDRAW} USDC です`, `Minimum withdrawal is ${MIN_WITHDRAW} USDC`));
+    if (wd > 0 && amount - wd > 1e-9) throw new Error(T(`引き出し可能額（${wd}）を超えています`, `Exceeds withdrawable (${wd})`));
+
+    const destIn = prompt(T("出金先アドレス（Arbitrum。通常は自分のウォレット）:", "Destination address (on Arbitrum; usually your own wallet):"), state.user);
+    if (destIn === null) return;
+    const dest = destIn.trim();
+    if (!/^0x[0-9a-fA-F]{40}$/.test(dest)) throw new Error(T(`アドレスが不正です: 「${destIn}」`, `Invalid address: "${destIn}"`));
+
+    if (!confirm(T(
+      `${NET.isMainnet ? "【Mainnet — 実資金】\n" : ""}${amount} USDC を Arbitrum の\n${dest}\nへ出金します（着金 ${amount - WITHDRAW_FEE} USDC・3〜7分）。よろしいですか？`,
+      `${NET.isMainnet ? "[Mainnet — real funds]\n" : ""}Withdraw ${amount} USDC to\n${dest}\non Arbitrum (you receive ${amount - WITHDRAW_FEE} USDC, 3–7 min). OK?`))) return;
+
+    trade.busy = true;
+    tradeStatus(T("MetaMask で出金の署名待ち…", "Waiting for MetaMask signature…"));
+    const time = Date.now();
+    const chainIdHex = await mmProvider.request({ method: "eth_chainId" });
+    const action = {
+      type: "withdraw3",
+      signatureChainId: chainIdHex,
+      hyperliquidChain: NET.isMainnet ? "Mainnet" : "Testnet",
+      destination: dest,
+      amount: HLSign.floatToWire(amount),
+      time,
+    };
+    const typed = HLSign.userSignedTypedData("HyperliquidTransaction:Withdraw", HLSign.WITHDRAW_SIGN_TYPES, action);
+    const sigHex = await mmProvider.request({
+      method: "eth_signTypedData_v4",
+      params: [state.user, JSON.stringify(typed)],
+    });
+    tradeStatus(T("出金を送信中…", "Submitting withdrawal…"));
+    await exchangePost(action, HLSign.splitSig(sigHex), time); // user-signed は nonce = time
+    tradeStatus(T(`出金リクエストを送信しました（${amount} USDC → Arbitrum、3〜7分で着金）`, `Withdrawal submitted (${amount} USDC → Arbitrum, arrives in 3–7 min)`), "ok");
+    refreshAccount();
+  } catch (e) {
+    console.error("withdraw:", e);
+    tradeStatus(errMsg(e), "err");
+    alert(T("出金に失敗:\n", "Withdrawal failed:\n") + errMsg(e)); // 共有 footer からの操作はステータス行が目に入りにくい
+  } finally {
+    trade.busy = false;
+  }
+}
+
+async function depositFunds() {
+  if (trade.busy || !xferReady()) return;
+  const B = NET.isMainnet ? BRIDGE.mainnet : BRIDGE.testnet;
+  try {
+    trade.busy = true;
+    // MetaMask を Arbitrum へ（違うチェーンのままだと別チェーンの同アドレス宛て送金になり危険）
+    const cur = await mmProvider.request({ method: "eth_chainId" });
+    if (cur !== B.chainId) {
+      tradeStatus(T(`MetaMask を ${B.chainName} に切替中…`, `Switching MetaMask to ${B.chainName}…`));
+      await mmProvider.request({ method: "wallet_switchEthereumChain", params: [{ chainId: B.chainId }] });
+    }
+    // ウォレットの USDC 残高（取れなければ表示だけ省く）
+    let bal = null;
+    try {
+      const data = "0x70a08231" + state.user.slice(2).toLowerCase().padStart(64, "0"); // balanceOf(address)
+      const res = await mmProvider.request({ method: "eth_call", params: [{ to: B.usdc, data }, "latest"] });
+      bal = Number(BigInt(res)) / 1e6;
+    } catch (e) { console.warn("USDC balanceOf:", e); }
+
+    const amtIn = prompt(
+      T(`入金額（USDC）: 最小 ${MIN_DEPOSIT}${bal != null ? ` / ウォレット残高 ${bal}` : ""}\n⚠ ${MIN_DEPOSIT} USDC 未満の入金は没収されます（native USDC のみ）`,
+        `Deposit amount (USDC): min ${MIN_DEPOSIT}${bal != null ? ` / wallet balance ${bal}` : ""}\n⚠ Deposits under ${MIN_DEPOSIT} USDC are forfeited (native USDC only)`), "");
+    if (amtIn === null) return;
+    const amount = parsePositive(amtIn, T("入金額", "amount"));
+    if (amount < MIN_DEPOSIT) throw new Error(T(`最小入金額は ${MIN_DEPOSIT} USDC です（未満はブリッジに没収されます）`, `Minimum deposit is ${MIN_DEPOSIT} USDC (smaller amounts are forfeited)`));
+    if (bal != null && amount - bal > 1e-9) throw new Error(T(`ウォレットの USDC 残高（${bal}）を超えています`, `Exceeds wallet USDC balance (${bal})`));
+
+    if (!confirm(T(
+      `${NET.isMainnet ? "【Mainnet — 実資金】\n" : ""}${B.chainName} の USDC ${amount} を Hyperliquid ブリッジ\n${B.bridge}\nへ送金します。約1分で残高に反映されます。よろしいですか？`,
+      `${NET.isMainnet ? "[Mainnet — real funds]\n" : ""}Send ${amount} USDC on ${B.chainName} to the Hyperliquid bridge\n${B.bridge}\nCredited in about 1 minute. OK?`))) return;
+
+    tradeStatus(T("MetaMask で送金の承認待ち…", "Waiting for MetaMask confirmation…"));
+    const units = BigInt(Math.round(amount * 1e6)); // USDC は 6 decimals
+    const calldata = new ethers.Interface(["function transfer(address to, uint256 value) returns (bool)"])
+      .encodeFunctionData("transfer", [ethers.getAddress(B.bridge), units]);
+    const txHash = await mmProvider.request({
+      method: "eth_sendTransaction",
+      params: [{ from: state.user, to: ethers.getAddress(B.usdc), data: calldata }],
+    });
+    tradeStatus(T(`入金トランザクションを送信しました（${txHash.slice(0, 12)}…）。約1分で残高に反映されます`, `Deposit transaction sent (${txHash.slice(0, 12)}…). Credited in about 1 minute`), "ok");
+  } catch (e) {
+    console.error("deposit:", e);
+    tradeStatus(errMsg(e), "err");
+    alert(T("入金に失敗:\n", "Deposit failed:\n") + errMsg(e));
+  } finally {
+    trade.busy = false;
+  }
+}
+
 function handleAgentError(e) {
   if (/does not exist|not registered|api wallet/i.test(String(e?.message ?? e))) {
     dropAgent();
@@ -495,6 +622,11 @@ if (ACCT_ON) {
     const btn = e.target.closest("button.close-pos");
     if (btn) closePosition(btn.dataset.coin);
   };
+
+  // 入出金（共有 footer のボタンも供給役ペインが処理。onclick 代入は上と同じ理由）
+  const dep = acct("ac-deposit"), wdb = acct("ac-withdraw-btn");
+  if (dep) dep.onclick = depositFunds;
+  if (wdb) wdb.onclick = withdrawFunds;
 }
 
 renderTradePane();

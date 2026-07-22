@@ -608,6 +608,20 @@ button.cxl:hover, button.close-pos:hover { color: var(--sell); border-color: var
 button.mod:hover { color: var(--ink); border-color: var(--muted); }
 button.cxl, button.mod, button.close-pos { white-space: nowrap; }
 
+/* 入出金ボタン（アカウント欄サマリ右端） */
+#acct-xfer { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+#acct-xfer button {
+  background: none;
+  border: 1px solid var(--hairline);
+  border-radius: 4px;
+  color: var(--muted);
+  font-size: 12px;
+  padding: 4px 10px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+#acct-xfer button:hover { color: var(--ink); border-color: var(--muted); }
+
 /* ---------- 2画面（duo.html の iframe ペイン内） ----------
    ペイン幅は画面の半分しかないため、下の ≤900px モバイル縦積みは適用せず
    デスクトップ型（チャート+右カラム）を維持し、右カラムをやや狭める（320→260px）。

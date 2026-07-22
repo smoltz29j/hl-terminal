@@ -62,6 +62,7 @@ const state = {
   acctTimer: null,
   openOrders: [],        // frontendOpenOrders の生データ（oid → 注文詳細の参照用）
   positions: [],         // clearinghouseState のポジション（クローズ操作の参照用）
+  withdrawable: 0,       // 引き出し可能 USDC（出金 UI のデフォルト値・上限チェック用）
 };
 
 // ---------- 2画面モード（duo.html が index.html?pane=1/2 を iframe で並べる） ----------
@@ -667,7 +668,10 @@ const DEMAND_URL = (() => {
   try {
     const u = localStorage.getItem("hlt-demand");
     if (u === "off") return null;
-    return u || `ws://${location.hostname}:8765/ws`;
+    // https ページからは平文 ws:// が mixed content でブロックされるため wss リスナー（8766）を使う
+    return u || (location.protocol === "https:"
+      ? `wss://${location.hostname}:8766/ws`
+      : `ws://${location.hostname}:8765/ws`);
   } catch { return null; }
 })();
 
@@ -1274,8 +1278,15 @@ function renderAccount(ch, orders) {
   const upnl = positions.reduce((s, p) => s + Number(p.unrealizedPnl), 0);
 
   acct("ac-equity").textContent = fmtUsd2(ch.marginSummary.accountValue);
+  // 取引可能 = 総資産 − 使用中証拠金（新規建てに使える余力。withdrawable とは未実現損益等の扱いが違う）
+  acct("ac-avail").textContent = fmtUsd2(Math.max(0,
+    Number(ch.marginSummary.accountValue) - Number(ch.marginSummary.totalMarginUsed)));
   acct("ac-withdraw").textContent = fmtUsd2(ch.withdrawable);
   acct("ac-margin").textContent = fmtUsd2(ch.marginSummary.totalMarginUsed);
+  state.withdrawable = Number(ch.withdrawable); // 出金 UI のデフォルト値・上限チェック用
+  // 入出金ボタンは署名できる接続（MetaMask）のときだけ出す
+  const xfer = acct("acct-xfer");
+  if (xfer) xfer.hidden = state.userSource !== "mm";
   const upEl = acct("ac-upnl");
   upEl.textContent = (upnl >= 0 ? "+" : "") + fmtUsd2(upnl);
   upEl.className = "value " + signCls(upnl);
@@ -1383,6 +1394,34 @@ function closeModal() {
   $("connect-modal").hidden = true;
 }
 
+// 接続状態の永続化（1画面⇔2画面の切替はページ遷移なので、これが無いと毎回切断される）。
+// 保存はユーザーの明示操作（接続/切断/accountsChanged）のみで行い、?user= クエリでは書かない
+function saveWalletSession(addr, source = "mm") {
+  try { localStorage.setItem("hlt-user", JSON.stringify({ addr, source })); } catch { /* private mode */ }
+}
+function clearWalletSession() {
+  try { localStorage.removeItem("hlt-user"); } catch { /* private mode */ }
+}
+
+function initSdk() {
+  if (!mmsdk) {
+    mmsdk = new MetaMaskSDK.MetaMaskSDK({
+      dappMetadata: { name: "HL Terminal", url: location.origin },
+      checkInstallationImmediately: false,
+    });
+    return mmsdk.init().then(() => mmsdk);
+  }
+  return Promise.resolve(mmsdk);
+}
+
+function wireProvider(p) {
+  p.removeAllListeners?.("accountsChanged");
+  p.on("accountsChanged", (a) => {
+    if (a?.length) { saveWalletSession(a[0]); setUser(a[0], "mm"); closeModal(); }
+    else { clearWalletSession(); setUser(null); }
+  });
+}
+
 // MetaMask SDK: 拡張があればそれを使い、無ければ SDK が QR モーダルを表示して
 // スマホの MetaMask アプリと本セッションを張る（app.hyperliquid.xyz と同じ方式）
 async function connectMetaMask() {
@@ -1390,22 +1429,13 @@ async function connectMetaMask() {
   btn.disabled = true;
   btn.textContent = T("接続待ち…", "Connecting…");
   try {
-    if (!mmsdk) {
-      mmsdk = new MetaMaskSDK.MetaMaskSDK({
-        dappMetadata: { name: "HL Terminal", url: location.origin },
-        checkInstallationImmediately: false,
-      });
-      await mmsdk.init();
-    }
+    await initSdk();
     mmProvider = mmsdk.getProvider();
     // request の解決を待たずに済むよう先に登録（承認がスマホ側で遅れて完了した場合の保険）
-    mmProvider.removeAllListeners?.("accountsChanged");
-    mmProvider.on("accountsChanged", (a) => {
-      if (a?.length) { setUser(a[0], "mm"); closeModal(); }
-      else setUser(null);
-    });
+    wireProvider(mmProvider);
     const accounts = await mmProvider.request({ method: "eth_requestAccounts" });
     if (accounts?.length) {
+      saveWalletSession(accounts[0]);
       setUser(accounts[0], "mm");
       closeModal();
     }
@@ -1417,14 +1447,50 @@ async function connectMetaMask() {
   }
 }
 
+// 起動時の再接続: 前回 mm 接続なら SDK セッションを静かに張り直す。
+// eth_requestAccounts と違い eth_accounts は承認 UI/QR を一切出さない —
+// セッションが生きていなければ空が返るだけなので、そのときは保存を破棄して未接続に戻す
+async function restoreWallet() {
+  let saved = null;
+  try { saved = JSON.parse(localStorage.getItem("hlt-user")); } catch { /* broken JSON */ }
+  if (!saved?.addr) return;
+  if (saved.source === "watch") { setUser(saved.addr, "watch", true); return; }
+  // 表示は先に復元（fromSync: 各ペインが自力で復元するので伝播不要）。agent 鍵もこの時点で載る
+  setUser(saved.addr, "mm", true);
+  // SDK の再接続は供給役（1画面 / 左ペイン）のみ — 現行の接続導線と同じ（右ペインは表示+agent のみ）
+  if (FRAMED && PANE === "2") return;
+  try {
+    await initSdk();
+    const p = mmsdk.getProvider();
+    wireProvider(p);
+    const accounts = await p.request({ method: "eth_accounts" });
+    if (accounts?.length) {
+      mmProvider = p;
+      if (accounts[0].toLowerCase() !== saved.addr.toLowerCase()) {
+        saveWalletSession(accounts[0]);
+        setUser(accounts[0], "mm");
+      }
+    } else {
+      clearWalletSession();
+      setUser(null); // 右ペインへも伝播して未接続表示に戻す
+    }
+  } catch (e) {
+    console.warn("wallet session restore:", e);
+    clearWalletSession();
+    setUser(null);
+  }
+}
+
 function disconnectWallet() {
   try { mmsdk?.terminate(); } catch { /* no active SDK session */ }
+  clearWalletSession();
   setUser(null);
 }
 
 function connectWatch() {
   const addr = prompt(T("表示するアドレスを入力（ウォッチモード）:", "Enter address to watch:"));
   if (addr && /^0x[0-9a-fA-F]{40}$/.test(addr.trim())) {
+    saveWalletSession(addr.trim().toLowerCase(), "watch");
     setUser(addr.trim().toLowerCase(), "watch");
     closeModal();
   } else if (addr) {
@@ -1594,6 +1660,10 @@ window.__hlt = {
   get volChart() { return volChart; },
   get candleSeries() { return candleSeries; },
   state,
+  get mmProvider() { return mmProvider; },
+  set mmProvider(p) { mmProvider = p; }, // E2E でフェイクプロバイダを差し込む用
+  get mmsdk() { return mmsdk; },
+  set mmsdk(s) { mmsdk = s; }, // E2E でフェイク SDK を差し込む用（restoreWallet の検証）
 };
 
 // ---------- 表示言語の適用と切替ボタン ----------
@@ -1638,6 +1708,13 @@ function applyLang() {
   if (rowLabels[1]) rowLabels[1].textContent = "Size";
   $("tf-px").placeholder = FRAMED ? "Price" : "0.0";
   $("tf-sz").placeholder = FRAMED ? "Size" : "0.0";
+  // アカウント欄サマリ（1画面時。2画面の共有欄は duo.html のインラインスクリプトが担当）
+  const acctLabels = ["Equity", "Available to Trade", "Withdrawable", "Margin Used", "uPnL"];
+  document.querySelectorAll("#acct-summary .stat .label").forEach((n, i) => { if (acctLabels[i]) n.textContent = acctLabels[i]; });
+  t("#ac-deposit", "Deposit");
+  ttl("#ac-deposit", "Send USDC on Arbitrum to the bridge (min 5 USDC)");
+  t("#ac-withdraw-btn", "Withdraw");
+  ttl("#ac-withdraw-btn", "Withdraw USDC to Arbitrum (fee 1 USDC)");
   // 設定モーダル
   t("#settings-box h3", "API endpoint");
   const names = [
@@ -1680,5 +1757,6 @@ function applyLang() {
   demandConnect();
   setInterval(applyTlWatch, 30000); // 実需フローの追記を定期更新
   const qUser = new URLSearchParams(location.search).get("user");
-  if (qUser && /^0x[0-9a-fA-F]{40}$/.test(qUser)) setUser(qUser.toLowerCase(), "watch");
+  if (qUser && /^0x[0-9a-fA-F]{40}$/.test(qUser)) setUser(qUser.toLowerCase(), "watch"); // クエリ指定は保存しない（テスト用の一時表示）
+  else restoreWallet(); // 前回の接続を復元（1画面⇔2画面切替・リロードで切断されないように）
 })();

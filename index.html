@@ -19,7 +19,7 @@ if (window.self !== window.top) document.documentElement.classList.add("framed")
 </script>
 <!-- ?v= はキャッシュバスター。style.css / app.js / hl-sign.js / trade.js を変更したら
      ここの4箇所 + duo.html の style.css?v= も合わせて数字を上げる -->
-<link rel="stylesheet" href="style.css?v=20">
+<link rel="stylesheet" href="style.css?v=24">
 <script src="https://unpkg.com/lightweight-charts@4.2.3/dist/lightweight-charts.standalone.production.js"></script>
 <script src="https://unpkg.com/ethers@6.15.0/dist/ethers.umd.min.js"></script>
 <script src="metamask-sdk.bundle.js"></script>
@@ -130,10 +130,16 @@ if (window.self !== window.top) document.documentElement.classList.add("framed")
 
   <footer id="account" hidden>
   <div id="acct-summary">
-    <div class="stat"><span class="label">Equity</span><span id="ac-equity" class="value">–</span></div>
-    <div class="stat"><span class="label">Withdrawable</span><span id="ac-withdraw" class="value">–</span></div>
-    <div class="stat"><span class="label">Margin Used</span><span id="ac-margin" class="value">–</span></div>
-    <div class="stat"><span class="label">uPnL</span><span id="ac-upnl" class="value">–</span></div>
+    <div class="stat"><span class="label">総資産</span><span id="ac-equity" class="value">–</span></div>
+    <div class="stat"><span class="label">取引可能</span><span id="ac-avail" class="value">–</span></div>
+    <div class="stat"><span class="label">引き出し可能</span><span id="ac-withdraw" class="value">–</span></div>
+    <div class="stat"><span class="label">証拠金使用中</span><span id="ac-margin" class="value">–</span></div>
+    <div class="stat"><span class="label">未実現損益</span><span id="ac-upnl" class="value">–</span></div>
+    <!-- 入出金は MetaMask 接続時のみ表示（ウォッチモードでは署名できない）。処理は trade.js -->
+    <div id="acct-xfer" hidden>
+      <button id="ac-deposit" title="Arbitrum の USDC をブリッジへ送金して入金（最小 5 USDC）">入金</button>
+      <button id="ac-withdraw-btn" title="USDC を Arbitrum へ出金（手数料 1 USDC）">出金</button>
+    </div>
   </div>
   <div id="acct-tables">
     <section>
@@ -188,8 +194,8 @@ if (window.self !== window.top) document.documentElement.classList.add("framed")
   </div>
 </div>
 
-<script src="app.js?v=20"></script>
-<script src="hl-sign.js?v=20"></script>
-<script src="trade.js?v=20"></script>
+<script src="app.js?v=24"></script>
+<script src="hl-sign.js?v=24"></script>
+<script src="trade.js?v=24"></script>
 </body>
 </html>

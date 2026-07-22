@@ -4,3 +4,5 @@ metamask-sdk.bundle.js
 node_modules/
 .claude/
 IMG_*.jpeg
+# TLS 証明書（mkcert のローカル CA 発行。秘密鍵を公開リポジトリに入れない）
+certs/
