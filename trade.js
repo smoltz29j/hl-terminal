@@ -393,13 +393,13 @@ async function withdrawFunds() {
   try {
     const wd = state.withdrawable;
     const amtIn = prompt(
-      T(`出金額（USDC）:\n引き出し可能 ${wd} / 最小 ${MIN_WITHDRAW} / 手数料 ${WITHDRAW_FEE} USDC（額から差し引き）`,
-        `Withdraw amount (USDC):\nWithdrawable ${wd} / min ${MIN_WITHDRAW} / fee ${WITHDRAW_FEE} USDC (deducted from amount)`),
+      T(`出金額（USDC）を入力:\n出金可能額 ${wd} USDC / 最小 ${MIN_WITHDRAW} / 手数料 ${WITHDRAW_FEE} USDC（額から差し引き）`,
+        `Withdraw amount (USDC):\nWithdrawable ${wd} USDC / min ${MIN_WITHDRAW} / fee ${WITHDRAW_FEE} USDC (deducted from amount)`),
       wd > 0 ? String(wd) : "");
     if (amtIn === null) return;
     const amount = parsePositive(amtIn, T("出金額", "amount"));
     if (amount < MIN_WITHDRAW) throw new Error(T(`最小出金額は ${MIN_WITHDRAW} USDC です`, `Minimum withdrawal is ${MIN_WITHDRAW} USDC`));
-    if (wd > 0 && amount - wd > 1e-9) throw new Error(T(`引き出し可能額（${wd}）を超えています`, `Exceeds withdrawable (${wd})`));
+    if (amount - wd > 1e-9) throw new Error(T(`出金額 ${amount} USDC が出金可能額（${wd} USDC）を上回っています`, `Withdraw amount ${amount} USDC exceeds the withdrawable balance (${wd} USDC)`));
 
     // 出金先は接続中のウォレット固定（手入力可にすると宛先タイポ=資金消失のリスクがあるため
     // 書き換え不可 — ユーザー指示 2026-07-22。別アドレスへ送りたい場合は着金後に Arbitrum 上で送金する）
