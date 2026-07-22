@@ -401,14 +401,13 @@ async function withdrawFunds() {
     if (amount < MIN_WITHDRAW) throw new Error(T(`最小出金額は ${MIN_WITHDRAW} USDC です`, `Minimum withdrawal is ${MIN_WITHDRAW} USDC`));
     if (wd > 0 && amount - wd > 1e-9) throw new Error(T(`引き出し可能額（${wd}）を超えています`, `Exceeds withdrawable (${wd})`));
 
-    const destIn = prompt(T("出金先アドレス（Arbitrum。通常は自分のウォレット）:", "Destination address (on Arbitrum; usually your own wallet):"), state.user);
-    if (destIn === null) return;
-    const dest = destIn.trim();
-    if (!/^0x[0-9a-fA-F]{40}$/.test(dest)) throw new Error(T(`アドレスが不正です: 「${destIn}」`, `Invalid address: "${destIn}"`));
+    // 出金先は接続中のウォレット固定（手入力可にすると宛先タイポ=資金消失のリスクがあるため
+    // 書き換え不可 — ユーザー指示 2026-07-22。別アドレスへ送りたい場合は着金後に Arbitrum 上で送金する）
+    const dest = state.user;
 
     if (!confirm(T(
-      `${NET.isMainnet ? "【Mainnet — 実資金】\n" : ""}${amount} USDC を Arbitrum の\n${dest}\nへ出金します（着金 ${amount - WITHDRAW_FEE} USDC・3〜7分）。よろしいですか？`,
-      `${NET.isMainnet ? "[Mainnet — real funds]\n" : ""}Withdraw ${amount} USDC to\n${dest}\non Arbitrum (you receive ${amount - WITHDRAW_FEE} USDC, 3–7 min). OK?`))) return;
+      `${NET.isMainnet ? "【Mainnet — 実資金】\n" : ""}${amount} USDC を Arbitrum の自分のアドレス\n${dest}\nへ出金します（着金 ${amount - WITHDRAW_FEE} USDC・3〜7分）。よろしいですか？`,
+      `${NET.isMainnet ? "[Mainnet — real funds]\n" : ""}Withdraw ${amount} USDC to your own address\n${dest}\non Arbitrum (you receive ${amount - WITHDRAW_FEE} USDC, 3–7 min). OK?`))) return;
 
     trade.busy = true;
     tradeStatus(T("MetaMask で出金の署名待ち…", "Waiting for MetaMask signature…"));
