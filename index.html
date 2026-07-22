@@ -19,7 +19,7 @@ if (window.self !== window.top) document.documentElement.classList.add("framed")
 </script>
 <!-- ?v= はキャッシュバスター。style.css / app.js / hl-sign.js / trade.js を変更したら
      ここの4箇所 + duo.html の style.css?v= も合わせて数字を上げる -->
-<link rel="stylesheet" href="style.css?v=30">
+<link rel="stylesheet" href="style.css?v=31">
 <script src="https://unpkg.com/lightweight-charts@4.2.3/dist/lightweight-charts.standalone.production.js"></script>
 <script src="https://unpkg.com/ethers@6.15.0/dist/ethers.umd.min.js"></script>
 <script src="metamask-sdk.bundle.js"></script>
@@ -131,9 +131,9 @@ if (window.self !== window.top) document.documentElement.classList.add("framed")
   <footer id="account" hidden>
   <div id="acct-summary">
     <div class="stat"><span class="label">総資産</span><span id="ac-equity" class="value">–</span></div>
-    <div class="stat" title="Spot 口座の評価額（USDC + トークン時価）。総資産に合算されます"><span class="label">Spot 残高</span><span id="ac-spot" class="value">–</span></div>
-    <div class="stat" title="Perps 口座の新規建て余力（Spot 残高は含まず — 「振替」で Perps へ移動）"><span class="label">取引可能</span><span id="ac-avail" class="value">–</span></div>
-    <div class="stat" title="Perps 口座からの出金可能額（Spot の資金は「振替」で移動）"><span class="label">引き出し可能</span><span id="ac-withdraw" class="value">–</span></div>
+    <div class="stat" title="Spot 口座の評価額（Perps 担保に拘束中の USDC は除く）。総資産に合算されます"><span class="label">Spot 残高</span><span id="ac-spot" class="value">–</span></div>
+    <div class="stat" title="新規建てに使える額（Perps 余力 + Spot 可用 USDC — 統合残高方式では Spot からも自動充当される）"><span class="label">取引可能</span><span id="ac-avail" class="value">–</span></div>
+    <div class="stat" title="出金できる額の目安（Spot 可用 USDC + Perps withdrawable）"><span class="label">引き出し可能</span><span id="ac-withdraw" class="value">–</span></div>
     <div class="stat"><span class="label">証拠金使用中</span><span id="ac-margin" class="value">–</span></div>
     <div class="stat"><span class="label">未実現損益</span><span id="ac-upnl" class="value">–</span></div>
     <!-- 入出金は MetaMask 接続時のみ表示（ウォッチモードでは署名できない）。処理は trade.js -->
@@ -210,8 +210,8 @@ if (window.self !== window.top) document.documentElement.classList.add("framed")
   </div>
 </div>
 
-<script src="app.js?v=30"></script>
-<script src="hl-sign.js?v=30"></script>
-<script src="trade.js?v=30"></script>
+<script src="app.js?v=31"></script>
+<script src="hl-sign.js?v=31"></script>
+<script src="trade.js?v=31"></script>
 </body>
 </html>

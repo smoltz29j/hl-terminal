@@ -1249,6 +1249,8 @@ function signCls(n) { return Number(n) >= 0 ? "up" : "down"; }
 
 // Spot 評価用: トークン名 → USDC 建てペア名（"@N"）。spotMeta は不変なので初回のみ取得してキャッシュ
 let spotPairs = null;
+// アカウント欄の付随データ（mids/ステーキング/vault）の 30 秒キャッシュ — レートリミット対策
+let acctAux = { mids: null, staking: null, vaults: null, ts: 0 };
 async function loadSpotPairs() {
   const meta = await info({ type: "spotMeta" });
   const tokName = {};
@@ -1261,16 +1263,21 @@ async function loadSpotPairs() {
   return pairs;
 }
 
-// Spot 口座の USDC 建て評価額（USDC + 各トークン × USDC 建てペアの mid）。取得失敗時は null
+// Spot 口座の USDC 建て評価額（取得失敗時は null）。
+// 統合残高方式（2026-07 実測）: Perps の証拠金は Spot USDC を hold して自動充当されるため、
+// USDC は total − hold（公式 webData2 の spot 表示と同じ純額）で数える — total のままだと
+// Perps accountValue と二重計上になる。トークンは USDC 建てペアの mid で時価評価。
+// 注意: Spot の未約定買い注文も hold に入る（その分は過小評価side）— 本ユーザーの用途では稀
 function spotEquity(spot, mids) {
   if (!spot) return null;
-  let total = 0;
+  let usdcAvail = 0, tokensVal = 0;
   for (const b of spot.balances) {
     const amt = Number(b.total);
     if (!amt) continue;
-    total += b.coin === "USDC" ? amt : amt * Number(mids?.[spotPairs?.[b.coin]] || 0);
+    if (b.coin === "USDC") usdcAvail = Math.max(0, amt - Number(b.hold || 0));
+    else tokensVal += amt * Number(mids?.[spotPairs?.[b.coin]] || 0);
   }
-  return total;
+  return { usdcAvail, tokensVal, total: usdcAvail + tokensVal };
 }
 
 async function refreshAccount() {
@@ -1285,46 +1292,71 @@ async function refreshAccount() {
   const user = state.user;
   try {
     // 入金は Spot USDC に着金する（2026-07 実測）ため perp だけでは総資産が $0 に見える —
-    // spot 残高も取得して合算する。spot 側の失敗は catch(null) で perp 表示を巻き込まない
-    const [ch, orders, spot, mids] = await Promise.all([
+    // spot 残高も取得して合算する。公式ポートフォリオに合わせてステーキング HYPE と vault も加算。
+    // 付随フェッチの失敗は catch(null) で perp 表示を巻き込まない。
+    // mids/ステーキング/vault は変化が遅いので 30 秒キャッシュ（毎回全部叩くと IP レートリミット
+    // 1200weight/分に近づき 429 になる — 2026-07-22 に実際に踏んだ）
+    const auxStale = Date.now() - acctAux.ts > 30000 || acctAux.user !== user;
+    const [ch, orders, spot, mids, staking, vaults] = await Promise.all([
       info({ type: "clearinghouseState", user }),
       // openOrders ではなく frontend 版: 修正(batchModify)に必要な tif/reduceOnly/isTrigger が取れる
       info({ type: "frontendOpenOrders", user }),
       info({ type: "spotClearinghouseState", user }).catch(() => null),
-      info({ type: "allMids" }).catch(() => null),
+      auxStale ? info({ type: "allMids" }).catch(() => acctAux.mids) : acctAux.mids,
+      auxStale ? info({ type: "delegatorSummary", user }).catch(() => acctAux.staking) : acctAux.staking,
+      auxStale ? info({ type: "userVaultEquities", user }).catch(() => acctAux.vaults) : acctAux.vaults,
     ]);
+    if (auxStale) acctAux = { mids, staking, vaults, ts: Date.now(), user };
     if (spot && !spotPairs) {
       try { spotPairs = await loadSpotPairs(); } catch { /* トークン評価は次周期に再試行 */ }
     }
     if (user !== state.user) return; // switched/disconnected while in flight
     state.openOrders = orders;
-    // 振替 UI 用: Spot の USDC 残高（トークンは含めない。取得失敗は null で区別）
-    state.spotUsdc = spot ? Number(spot.balances.find((b) => b.coin === "USDC")?.total ?? 0) : null;
-    renderAccount(ch, orders, spotEquity(spot, mids));
+    const spotEq = spotEquity(spot, mids);
+    // 振替 UI 用: Spot の USDC 可用残高（Perps 担保に拘束中の hold を除く。取得失敗は null で区別）
+    state.spotUsdc = spotEq ? spotEq.usdcAvail : null;
+    // ステーキング中+解除待ち HYPE の時価と vault equity（公式の総資産に含まれる）
+    const stakeVal = staking && mids?.HYPE
+      ? (Number(staking.delegated) + Number(staking.undelegated) + Number(staking.totalPendingWithdrawal)) * Number(mids.HYPE)
+      : 0;
+    const vaultVal = Array.isArray(vaults) ? vaults.reduce((s, v) => s + Number(v.equity), 0) : 0;
+    renderAccount(ch, orders, spotEq, stakeVal, vaultVal);
   } catch (e) {
     console.error("account refresh failed:", e);
   }
 }
 
-function renderAccount(ch, orders, spotVal) {
+function renderAccount(ch, orders, spotEq, stakeVal, vaultVal) {
   const positions = ch.assetPositions.map((p) => p.position);
   state.positions = positions;
   const canTrade = typeof tradeReady === "function" && tradeReady();
   const upnl = positions.reduce((s, p) => s + Number(p.unrealizedPnl), 0);
 
-  // 総資産 = Perps + Spot 合算（内訳は tooltip）。Spot が取れないときは Perps のみ+注記
+  // 総資産 = Perps + Spot純額 + ステーキング + Vault（公式ポートフォリオと同じ構成。内訳は tooltip）。
+  // Spot が取れないときは Perps のみ+注記
   const perpVal = Number(ch.marginSummary.accountValue);
+  const spotVal = spotEq ? spotEq.total : null;
   const eqEl = acct("ac-equity");
-  eqEl.textContent = fmtUsd2(perpVal + (spotVal ?? 0));
+  eqEl.textContent = fmtUsd2(perpVal + (spotVal ?? 0) + stakeVal + vaultVal);
   eqEl.title = spotVal == null
     ? T("Spot 残高を取得できず — Perps のみの値", "Spot balance unavailable — perps only")
-    : T(`内訳: Perps ${fmtUsd2(perpVal)} + Spot ${fmtUsd2(spotVal)}`,
-        `Perps ${fmtUsd2(perpVal)} + spot ${fmtUsd2(spotVal)}`);
+    : T(`内訳: Perps ${fmtUsd2(perpVal)} + Spot ${fmtUsd2(spotVal)} + ステーキング ${fmtUsd2(stakeVal)} + Vault ${fmtUsd2(vaultVal)}`,
+        `Perps ${fmtUsd2(perpVal)} + spot ${fmtUsd2(spotVal)} + staking ${fmtUsd2(stakeVal)} + vaults ${fmtUsd2(vaultVal)}`);
   const spEl = acct("ac-spot");
   if (spEl) spEl.textContent = spotVal == null ? "–" : fmtUsd2(spotVal);
-  // 取引可能 = Perps 総資産 − 使用中証拠金（新規建てに使える余力。withdrawable とは未実現損益等の扱いが違う）
-  acct("ac-avail").textContent = fmtUsd2(Math.max(0, perpVal - Number(ch.marginSummary.totalMarginUsed)));
-  acct("ac-withdraw").textContent = fmtUsd2(ch.withdrawable);
+  // 取引可能 = Perps 余力 + Spot 可用 USDC。統合残高方式では新規建ての証拠金が Spot USDC からも
+  // 自動充当される（hold が増える）ため、Perps 側だけだと実際に使える額より小さく見える
+  const perpFree = Math.max(0, perpVal - Number(ch.marginSummary.totalMarginUsed));
+  const availEl = acct("ac-avail");
+  availEl.textContent = fmtUsd2(perpFree + (spotEq?.usdcAvail ?? 0));
+  availEl.title = T(`内訳: Perps 余力 ${fmtUsd2(perpFree)} + Spot 可用 USDC ${fmtUsd2(spotEq?.usdcAvail ?? 0)}`,
+    `Perps free margin ${fmtUsd2(perpFree)} + available spot USDC ${fmtUsd2(spotEq?.usdcAvail ?? 0)}`);
+  // 引き出し可能 = Spot 可用 USDC + Perps withdrawable（公式アプリで実際に出金できる額の目安。
+  // 統合残高方式では Perps withdrawable はほぼ常に 0 で、出金原資は Spot 側にある）
+  const wdEl = acct("ac-withdraw");
+  wdEl.textContent = fmtUsd2((spotEq?.usdcAvail ?? 0) + Number(ch.withdrawable));
+  wdEl.title = T(`内訳: Spot 可用 USDC ${fmtUsd2(spotEq?.usdcAvail ?? 0)} + Perps ${fmtUsd2(ch.withdrawable)}`,
+    `Available spot USDC ${fmtUsd2(spotEq?.usdcAvail ?? 0)} + perps ${fmtUsd2(ch.withdrawable)}`);
   acct("ac-margin").textContent = fmtUsd2(ch.marginSummary.totalMarginUsed);
   state.withdrawable = Number(ch.withdrawable); // 出金 UI のデフォルト値・上限チェック用
   // 入出金ボタンは署名できる接続（MetaMask）のときだけ出す
@@ -1754,9 +1786,9 @@ function applyLang() {
   // アカウント欄サマリ（1画面時。2画面の共有欄は duo.html のインラインスクリプトが担当）
   const acctLabels = ["Equity", "Spot Balance", "Available to Trade", "Withdrawable", "Margin Used", "uPnL"];
   const acctTitles = [null,
-    "Spot account value (USDC + tokens at mid) — included in Equity",
-    "Perps margin available for new positions (spot not included — use Transfer)",
-    "Withdrawable from the perps account (use Transfer to move spot funds)",
+    "Spot account value (excluding USDC held as perps collateral) — included in Equity",
+    "Available for new positions (perps free margin + available spot USDC — unified balance draws from spot automatically)",
+    "Estimated withdrawable (available spot USDC + perps withdrawable)",
     null, null];
   document.querySelectorAll("#acct-summary .stat").forEach((n, i) => {
     if (acctLabels[i]) n.querySelector(".label").textContent = acctLabels[i];
