@@ -388,6 +388,21 @@ function xferReady() {
   return !!(state.user && state.userSource === "mm" && mmProvider);
 }
 
+// user-signed 署名・送金の前に MetaMask を所定の Arbitrum チェーンへ揃える。
+// 入金は誤チェーン送金防止のため必須。出金/振替でも、SDK が返す chainId と拡張の実チェーンが
+// 食い違うと eth_signTypedData_v4 が「Provided chainId does not match」で拒否されるため、
+// 先に切替してチェーンを確定させる（公式アプリも signatureChainId は Arbitrum 固定）。
+// 返り値 = 以後 signatureChainId に使う chainId(hex)
+async function ensureWalletChain() {
+  const B = NET.isMainnet ? BRIDGE.mainnet : BRIDGE.testnet;
+  const cur = await mmProvider.request({ method: "eth_chainId" });
+  if (cur !== B.chainId) {
+    tradeStatus(T(`MetaMask を ${B.chainName} に切替中…`, `Switching MetaMask to ${B.chainName}…`));
+    await mmProvider.request({ method: "wallet_switchEthereumChain", params: [{ chainId: B.chainId }] });
+  }
+  return B.chainId;
+}
+
 // 入出金用モーダル（prompt/confirm はフォント・色を弄れないため自前 — ユーザー要望 2026-07-22）。
 // input を渡すと入力ダイアログ（入力文字列 or null を返す）、省略で確認ダイアログ（true or null）。
 // html には数値・自前文言・アドレスのみ入れること（ユーザー入力を埋め込まない）
@@ -454,9 +469,9 @@ async function withdrawFunds() {
     if (!okc) return;
 
     trade.busy = true;
+    const chainIdHex = await ensureWalletChain();
     tradeStatus(T("MetaMask で出金の署名待ち…", "Waiting for MetaMask signature…"));
     const time = Date.now();
-    const chainIdHex = await mmProvider.request({ method: "eth_chainId" });
     const action = {
       type: "withdraw3",
       signatureChainId: chainIdHex,
@@ -525,9 +540,9 @@ async function transferFunds() {
     if (!okc) return;
 
     trade.busy = true;
+    const chainIdHex = await ensureWalletChain();
     tradeStatus(T("MetaMask で振替の署名待ち…", "Waiting for MetaMask signature…"));
     const nonce = Date.now();
-    const chainIdHex = await mmProvider.request({ method: "eth_chainId" });
     const action = {
       type: "usdClassTransfer",
       signatureChainId: chainIdHex,
@@ -561,11 +576,7 @@ async function depositFunds() {
   try {
     trade.busy = true;
     // MetaMask を Arbitrum へ（違うチェーンのままだと別チェーンの同アドレス宛て送金になり危険）
-    const cur = await mmProvider.request({ method: "eth_chainId" });
-    if (cur !== B.chainId) {
-      tradeStatus(T(`MetaMask を ${B.chainName} に切替中…`, `Switching MetaMask to ${B.chainName}…`));
-      await mmProvider.request({ method: "wallet_switchEthereumChain", params: [{ chainId: B.chainId }] });
-    }
+    await ensureWalletChain();
     // ウォレットの USDC 残高（取れなければ表示だけ省く）
     let bal = null;
     try {
