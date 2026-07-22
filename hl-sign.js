@@ -130,6 +130,15 @@
     { name: "time", type: "uint64" },
   ];
 
+  // usdClassTransfer = Spot⇄Perps の USDC 振替（Python SDK USD_CLASS_TRANSFER_SIGN_TYPES と同一。
+  // nonce フィールドを nonce としてそのまま使う）
+  const USD_CLASS_TRANSFER_SIGN_TYPES = [
+    { name: "hyperliquidChain", type: "string" },
+    { name: "amount", type: "string" },
+    { name: "toPerp", type: "bool" },
+    { name: "nonce", type: "uint64" },
+  ];
+
   // action には signatureChainId (hex) / hyperliquidChain を含めておくこと
   function userSignedTypedData(primaryType, signTypes, action) {
     const message = {};
@@ -159,6 +168,6 @@
 
   return {
     mpPack, actionHash, signL1Action, splitSig, floatToWire,
-    userSignedTypedData, APPROVE_AGENT_SIGN_TYPES, WITHDRAW_SIGN_TYPES, ZERO_ADDR,
+    userSignedTypedData, APPROVE_AGENT_SIGN_TYPES, WITHDRAW_SIGN_TYPES, USD_CLASS_TRANSFER_SIGN_TYPES, ZERO_ADDR,
   };
 });

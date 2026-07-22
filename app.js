@@ -1298,6 +1298,8 @@ async function refreshAccount() {
     }
     if (user !== state.user) return; // switched/disconnected while in flight
     state.openOrders = orders;
+    // 振替 UI 用: Spot の USDC 残高（トークンは含めない。取得失敗は null で区別）
+    state.spotUsdc = spot ? Number(spot.balances.find((b) => b.coin === "USDC")?.total ?? 0) : null;
     renderAccount(ch, orders, spotEquity(spot, mids));
   } catch (e) {
     console.error("account refresh failed:", e);
@@ -1753,13 +1755,15 @@ function applyLang() {
   const acctLabels = ["Equity", "Spot Balance", "Available to Trade", "Withdrawable", "Margin Used", "uPnL"];
   const acctTitles = [null,
     "Spot account value (USDC + tokens at mid) — included in Equity",
-    "Perps margin available for new positions (spot balance not included)",
-    "Withdrawable from the perps account (transfer spot funds on the official app)",
+    "Perps margin available for new positions (spot not included — use Transfer)",
+    "Withdrawable from the perps account (use Transfer to move spot funds)",
     null, null];
   document.querySelectorAll("#acct-summary .stat").forEach((n, i) => {
     if (acctLabels[i]) n.querySelector(".label").textContent = acctLabels[i];
     if (acctTitles[i]) n.title = acctTitles[i];
   });
+  t("#ac-transfer", "Transfer");
+  ttl("#ac-transfer", "Move USDC between spot and perps (no fee, instant)");
   t("#ac-deposit", "Deposit");
   ttl("#ac-deposit", "Send USDC on Arbitrum to the bridge (min 5 USDC)");
   t("#ac-withdraw-btn", "Withdraw");

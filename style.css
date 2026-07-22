@@ -506,6 +506,14 @@ main:has(#account:not([hidden])) { grid-template-rows: 2fr 1fr; }
 #xm-body .xm-wd { color: var(--sell); font-weight: 700; font-size: 17px; }
 #xm-body .xm-danger { color: var(--sell); font-weight: 700; }
 #xm-body .xm-addr { font-size: 13px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+#xm-body select {
+  background: var(--surface-2);
+  color: var(--ink);
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  font-size: 15px;
+  padding: 4px 8px;
+}
 #xm-input {
   width: 100%;
   box-sizing: border-box;

@@ -423,10 +423,15 @@ async function withdrawFunds() {
   if (trade.busy || !xferReady()) return;
   try {
     const wd = state.withdrawable;
+    // 出金は Perps 残高からのみ（withdraw3）。資金が Spot にあるときはその旨を案内
+    const spotHint = (state.spotUsdc ?? 0) > 0 && wd < MIN_WITHDRAW
+      ? T(`<br><span class="xm-danger">Spot に ${state.spotUsdc} USDC があります — 出金は Perps 残高からのみ。先に「振替」で Perps へ移してください</span>`,
+          `<br><span class="xm-danger">You have ${state.spotUsdc} USDC in spot — withdrawals draw from perps only. Use Transfer first.</span>`)
+      : "";
     const amtIn = await xferDialog({
       title: T("出金 — Hyperliquid → Arbitrum", "Withdraw — Hyperliquid → Arbitrum"),
-      html: T(`出金可能額: <span class="xm-wd">${wd} USDC</span><br>最小 ${MIN_WITHDRAW} USDC・手数料 ${WITHDRAW_FEE} USDC（出金額から差し引き）`,
-        `Withdrawable: <span class="xm-wd">${wd} USDC</span><br>Min ${MIN_WITHDRAW} USDC · fee ${WITHDRAW_FEE} USDC (deducted from amount)`),
+      html: T(`出金可能額: <span class="xm-wd">${wd} USDC</span><br>最小 ${MIN_WITHDRAW} USDC・手数料 ${WITHDRAW_FEE} USDC（出金額から差し引き）${spotHint}`,
+        `Withdrawable: <span class="xm-wd">${wd} USDC</span><br>Min ${MIN_WITHDRAW} USDC · fee ${WITHDRAW_FEE} USDC (deducted from amount)${spotHint}`),
       input: wd > 0 ? String(wd) : "",
       okLabel: T("次へ", "Next"),
     });
@@ -473,6 +478,78 @@ async function withdrawFunds() {
     console.error("withdraw:", e);
     tradeStatus(errMsg(e), "err");
     alert(T("出金に失敗:\n", "Withdrawal failed:\n") + errMsg(e)); // 共有 footer からの操作はステータス行が目に入りにくい
+  } finally {
+    trade.busy = false;
+  }
+}
+
+// Spot⇄Perps の USDC 振替（user-signed `usdClassTransfer`。手数料なし・即時・自分の口座内移動）。
+// 現行の Hyperliquid は入金が Spot に着金するため、Perps で発注/出金するにはこの振替が必要。
+// 署名バイト互換は復元アドレス法で testnet 実サーバー照合済み（2026-07-22）
+async function transferFunds() {
+  if (trade.busy || !xferReady()) return;
+  try {
+    const spotUsdc = state.spotUsdc ?? 0;
+    const wd = state.withdrawable || 0;
+    const defToPerp = spotUsdc >= wd; // 残高の多い側から移す方向を既定に
+    const dirSel = `<select id="xm-dir">
+      <option value="toPerp"${defToPerp ? " selected" : ""}>Spot → Perps</option>
+      <option value="toSpot"${defToPerp ? "" : " selected"}>Perps → Spot</option>
+    </select>`;
+    const dlg = xferDialog({
+      title: T("振替 — Spot ⇄ Perps", "Transfer — Spot ⇄ Perps"),
+      html: T(`Spot USDC: <b>${spotUsdc}</b> / Perps 出金可能: <b>${wd}</b><br>方向: ${dirSel}<br>手数料なし・即時反映（自分の口座内の移動）`,
+        `Spot USDC: <b>${spotUsdc}</b> / perps withdrawable: <b>${wd}</b><br>Direction: ${dirSel}<br>No fee · instant (moves within your own account)`),
+      input: String(defToPerp ? spotUsdc : wd),
+      okLabel: T("次へ", "Next"),
+    });
+    // 方向を切り替えたら金額の既定値もその側の全額に追従させる（xferDialog が innerHTML を
+    // 同期的に設定してから await するので、ここで select を掴める）
+    const dirEl = $("xm-dir");
+    dirEl.onchange = () => { $("xm-input").value = String(dirEl.value === "toPerp" ? spotUsdc : wd); };
+    const amtIn = await dlg;
+    if (amtIn === null) return;
+    const toPerp = dirEl.value === "toPerp";
+    const cap = toPerp ? spotUsdc : wd;
+    const amount = Math.round(parsePositive(amtIn, T("振替額", "amount")) * 1e6) / 1e6; // USDC は 6 decimals
+    if (amount - cap > 1e-9) throw new Error(toPerp
+      ? T(`振替額 ${amount} USDC が Spot の USDC 残高（${spotUsdc}）を上回っています`, `Transfer amount ${amount} USDC exceeds the spot USDC balance (${spotUsdc})`)
+      : T(`振替額 ${amount} USDC が Perps の出金可能額（${wd}）を上回っています`, `Transfer amount ${amount} USDC exceeds the perps withdrawable balance (${wd})`));
+
+    const okc = await xferDialog({
+      title: T("振替の確認", "Confirm transfer"),
+      html: T(`<b>${amount} USDC</b> を ${toPerp ? "Spot → Perps" : "Perps → Spot"} へ振替します<br>手数料なし・即時反映（口座外への移動はありません）`,
+        `Transfer <b>${amount} USDC</b> ${toPerp ? "spot → perps" : "perps → spot"}<br>No fee · instant (funds never leave your account)`),
+      okLabel: T("振替する", "Transfer"),
+    });
+    if (!okc) return;
+
+    trade.busy = true;
+    tradeStatus(T("MetaMask で振替の署名待ち…", "Waiting for MetaMask signature…"));
+    const nonce = Date.now();
+    const chainIdHex = await mmProvider.request({ method: "eth_chainId" });
+    const action = {
+      type: "usdClassTransfer",
+      signatureChainId: chainIdHex,
+      hyperliquidChain: NET.isMainnet ? "Mainnet" : "Testnet",
+      amount: HLSign.floatToWire(amount),
+      toPerp,
+      nonce,
+    };
+    const typed = HLSign.userSignedTypedData("HyperliquidTransaction:UsdClassTransfer", HLSign.USD_CLASS_TRANSFER_SIGN_TYPES, action);
+    const sigHex = await mmProvider.request({
+      method: "eth_signTypedData_v4",
+      params: [state.user, JSON.stringify(typed)],
+    });
+    tradeStatus(T("振替を送信中…", "Submitting transfer…"));
+    await exchangePost(action, HLSign.splitSig(sigHex), nonce); // user-signed は nonce = action.nonce
+    tradeStatus(T(`振替しました（${amount} USDC ${toPerp ? "Spot → Perps" : "Perps → Spot"}）`,
+      `Transferred ${amount} USDC ${toPerp ? "spot → perps" : "perps → spot"}`), "ok");
+    refreshAccount();
+  } catch (e) {
+    console.error("transfer:", e);
+    tradeStatus(errMsg(e), "err");
+    alert(T("振替に失敗:\n", "Transfer failed:\n") + errMsg(e)); // 共有 footer からの操作はステータス行が目に入りにくい
   } finally {
     trade.busy = false;
   }
@@ -670,10 +747,11 @@ if (ACCT_ON) {
     if (btn) closePosition(btn.dataset.coin);
   };
 
-  // 入出金（共有 footer のボタンも供給役ペインが処理。onclick 代入は上と同じ理由）
-  const dep = acct("ac-deposit"), wdb = acct("ac-withdraw-btn");
+  // 入出金・振替（共有 footer のボタンも供給役ペインが処理。onclick 代入は上と同じ理由）
+  const dep = acct("ac-deposit"), wdb = acct("ac-withdraw-btn"), trf = acct("ac-transfer");
   if (dep) dep.onclick = depositFunds;
   if (wdb) wdb.onclick = withdrawFunds;
+  if (trf) trf.onclick = transferFunds;
 }
 
 renderTradePane();
