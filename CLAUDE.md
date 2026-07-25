@@ -18,6 +18,8 @@ elwhite (192.168.101.201) 上で動かし、LAN のブラウザから **`https:/
 - **クライアント側の信頼**: CA 未導入デバイスは警告を1回通せば使える。警告を消すには `https://192.168.101.201:8010/certs/rootCA.pem` をダウンロードして各デバイスにインストール（iPhone: プロファイルインストール→「証明書信頼設定」で完全信頼、Windows: 「信頼されたルート証明機関」へ、elwhite の Chrome: `libnss3-tools` を入れて `mkcert -install`）。rootCA.pem は公開鍵のみなので配布可。
 - **実需フィード連携**: https ページから平文 `ws://:8765` は mixed content でブロックされるため、realtime_demand サーバーに **wss リスナー（8766、同じ証明書）** を追加済み（server.py の `--ssl-cert/--ssl-key/--ssl-port`。8765 平文は自身のダッシュボード用に併存）。app.js の `DEMAND_URL` はページが https なら wss:8766 を自動選択。
 
+**急落警報の常設監視（tools/crash_watch.mjs、2026-07-26）**: システム cron（毎時 4,19,34,49分）で app.js と同一の判定（TL ロジックは app.js から実行時抽出 — 二重実装なし・チューニング自動追従）+ 実需5分フロー（realtime_demand の snap を WS で1回取得）を実行し、**状態変化（stage/level/上昇チャネル割れ の変化・騙し転換）時だけ notify-send** でデスクトップ通知。状態は `tools/crash_watch_state.json`、ログは `tools/crash_watch.log`。`--peek` は状態を書かない読み取り専用（Claude セッションからの確認用）。ユーザー方針（2026-07-26）: 「急落を見つけたらすぐ指摘・騙しと判断したらそれも指摘」— Claude セッション中はセッション内 cron でも定期チェックして口頭で指摘する（CronCreate はセッション限り・7日で失効するので新セッションで張り直すこと）。
+
 本番は systemd ユーザーユニット `hl-terminal.service`（`~/.config/systemd/user/`、Restart=always・linger 有効）で常駐。再起動は `systemctl --user restart hl-terminal`。run.sh は手元試験用。実需フィードの `btc-demand.service`（port 8765+wss 8766、crypto_analysis）も同様にユニット化済み。
 
 ## アーキテクチャ
