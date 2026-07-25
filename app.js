@@ -270,12 +270,15 @@ const TL_COARSE_MIN = 10;      // 長期（トップダウン分割）チャネ�
 const TL_FAST_BARS = 12;       // 長期バンドをこの本数未満で横断する傾き差 = 「急変」チャネル
 const TL_RECENT_CRASH = 90;    // 急変チャネルを残す新しさ（本数）。それより古い断片は消す
 const TL_MAX_CHANNELS = 16; // 描画上限（クラッタ防止）
-const TL_EXTEND = 8;        // 右端に届くチャネルの未来方向への延長本数
+const TL_EXTEND = 24;       // 右端に届くチャネルの未来方向への延長本数（ユーザー指示 2026-07-25 で 8→24）
 const TL_FIT_TOL = 0.2;     // 延長続行の許容はみ出し（チャネル幅に対する比）
 const TL_MIN_SUB = 8;       // 再帰分割の子・直近レッグの最小本数
 const TL_SPLIT_GAIN = 0.75; // 分割で子チャネル幅がこの比率未満に縮む場合のみ分割
 const TL_RECENT_WIN = 30;   // 直近レッグの起点（最安値/最高値）を探す窓
 const TL_OUTLIER = 0.04;    // チャネル上下限が無視してよいバーの割合（片側）
+const TL_TOUCH_TOL = 0.06;  // 接触最大化フィットの接触判定許容（チャネル幅比）
+const TL_FRESH = 2;         // 右端チャネルのフィットから最低限除外する直近本数
+const TL_MATURE = 20;       // チャネルの確立期間（この本数まではフィット窓に必ず含める）
 
 let tlSeries = []; // 使い回す line series プール（チャネル1本 = 上下2系列）
 
@@ -342,6 +345,135 @@ function fitChannel(a, b, hs, ls, cs) {
   rl.sort((x, y) => x - y); // 昇順
   const drop = Math.floor(n * TL_OUTLIER);
   return { m, c, up: rh[drop], dn: rl[drop] };
+}
+
+// 接触最大化フィット（描画・シグナル用。区間分割には従来の fitChannel を使う）:
+// 手書きのトレンドラインに合わせる方式（ユーザー指示 2026-07-25）。回帰+分位点の
+// オフセットだと線は実質1本の足にしか接しないが、人間はスイング安値/高値の
+// 「棚」に複数の足が接するように線を引く。そこでトレンド側（上昇なら安値、
+// 下降なら高値）のスイングピボット2点を通る候補線を全列挙し、
+// 「はみ出し ≤ 片側 TL_OUTLIER 割合」の制約下で 接触本数 − 2×はみ出し本数 が
+// 最大の線を主線に選ぶ（極値ヒゲ数本は線の外に出てよい — 例: 2026-07 上昇
+// チャネルでは 7/1 の投げ売りヒゲだけが下に残り、下線は 7/2·13·17·24·25 の
+// 安値の棚に接する）。反対側は同じ傾きの平行線で、同様のスコアで
+// オフセットを選ぶ。同点は線と価格の隙間合計が小さい方（よりタイトに接する方）。
+// 候補が無い区間（ピボット不足等）は従来フィットにフォールバック。
+// 右端まで生きているチャネルの直近の扱い（ユーザー指示 2026-07-25 —
+// 若いうちは引き直してよいが、確立したら引き直さず、確立した線からの
+// ずれが続いたらトレンド転換を警戒。ずれた足は線の外に描かれ続けるべき）:
+// ①保守的な窓 [a, min(b−TL_FRESH, max(a+TL_MATURE−1, b−n/3))] で参照フィット
+// ②参照線に対し右端から連続してチャネル外（tol 超）にある本数 run を数える
+// ③最終フィット窓 = [a, b − max(TL_FRESH, run)]（下限は①の窓）
+// 直近が順行なら run≤TL_FRESH で従来どおり全体で引き直し（接触品質・シグナル
+// 挙動は不変）、ずれが続けばその分だけ窓が後退して線が凍結される。
+// 注1: 「今の線に対して run を数えて除外」の1段方式は不可 — 逸脱が TL_FRESH 本を
+//   超えた時点で out 予算超過により線が先に回転し、回転後の線では逸脱を検出
+//   できない（合成ドリフトテストで実証）。注2: 窓の常時固定（②③なし）も不可 —
+//   線が本体の極値に張り付き BB との交差（▼床破断）が出なくなり、1月/6月の
+//   急落警報バックテストが全滅する。注3: tol/out 予算は必ず窓内で計算する —
+//   区間全体で取ると、ずれた足が tol を変えて勝者の線が入れ替わる。
+function touchFit(a, b, hs, ls, cs) {
+  const n = b - a + 1;
+
+  // フィット窓 [a, e] で接触最大化フィット（e より右は tol/予算含め影響ゼロ）。
+  // 候補が無ければ窓の従来フィットを返す。
+  const fitAt = (e) => {
+    const f0 = fitChannel(a, e, hs, ls, cs); // 幅の基準・フォールバック
+    const tol = (f0.up - f0.dn) * TL_TOUCH_TOL;
+    const maxOut = Math.max(1, Math.floor((e - a + 1) * TL_OUTLIER));
+    // 窓内のアンカー候補: スイングピボット + 窓内の最値バー
+    const pivots = findPivots(hs, ls, 2).filter((p) => p.i >= a && p.i <= e);
+    const anchors = (side) => {
+      const arr = pivots.filter((p) => (side === "dn" ? !p.hi : p.hi)).map((p) => p.i);
+      let ext = a;
+      for (let i = a; i <= e; i++) {
+        if (side === "dn" ? ls[i] < ls[ext] : hs[i] > hs[ext]) ext = i;
+      }
+      if (!arr.includes(ext)) arr.push(ext);
+      return arr.sort((x, y) => x - y);
+    };
+
+    const bestLine = (side) => {
+      const vs = side === "dn" ? ls : hs;
+      const as = anchors(side);
+      let best = null;
+      for (let x = 0; x < as.length; x++) {
+        for (let y = x + 1; y < as.length; y++) {
+          const i = as[x], j = as[y];
+          if (j - i < 3) continue;
+          const m = (vs[j] - vs[i]) / (j - i);
+          let touch = 0, out = 0, gap = 0;
+          for (let q = a; q <= e; q++) {
+            const d = side === "dn"
+              ? vs[q] - (vs[i] + m * (q - i))
+              : (vs[i] + m * (q - i)) - vs[q];
+            if (Math.abs(d) <= tol) touch++;
+            else if (d < 0) out++; // 線の外側（下線なら下、上線なら上）へのはみ出し
+            else gap += d;
+          }
+          if (out > maxOut) continue;
+          const score = touch - 2 * out;
+          if (!best || score > best.score || (score === best.score && gap < best.gap)) {
+            best = { m, v0: vs[i] + m * (a - i), score, gap };
+          }
+        }
+      }
+      return best;
+    };
+
+    // トレンド側を主線に。傾き0（den=0 等）は安値側から試し、無ければ反対側
+    let primary = f0.m > 0 ? "dn" : "up";
+    let main = bestLine(primary);
+    if (!main) { primary = primary === "dn" ? "up" : "dn"; main = bestLine(primary); }
+    if (!main) return { ...f0, tol };
+
+    // 反対側: 同じ傾きの平行線。オフセット候補 = 各バーの高値/安値との差
+    const other = primary === "dn" ? "up" : "dn";
+    const vs = other === "dn" ? ls : hs;
+    let bestOff = null;
+    for (let i = a; i <= e; i++) {
+      const off = vs[i] - (main.v0 + main.m * (i - a));
+      let touch = 0, out = 0, gap = 0;
+      for (let q = a; q <= e; q++) {
+        const d = other === "dn"
+          ? vs[q] - (main.v0 + main.m * (q - a) + off)
+          : (main.v0 + main.m * (q - a) + off) - vs[q];
+        if (Math.abs(d) <= tol) touch++;
+        else if (d < 0) out++;
+        else gap += d;
+      }
+      if (out > maxOut) continue;
+      const score = touch - 2 * out;
+      if (!bestOff || score > bestOff.score || (score === bestOff.score && gap < bestOff.gap)) {
+        bestOff = { off, score, gap };
+      }
+    }
+    if (!bestOff) return { ...f0, tol };
+
+    // fitChannel と同じ形 {m, c, up, dn} で返す（c = 主線の bar a での値）
+    return {
+      m: main.m,
+      c: main.v0,
+      up: primary === "up" ? 0 : bestOff.off,
+      dn: primary === "dn" ? 0 : bestOff.off,
+      tol,
+    };
+  };
+
+  let e = b;
+  if (b >= cs.length - 1 && b - TL_FRESH >= a + TL_MIN_SUB - 1) {
+    // ①参照フィット（保守的な窓 = 直近1/3除外、ただし確立期間は含める）
+    const wRef = Math.max(a + TL_MIN_SUB - 1,
+      Math.min(b - TL_FRESH, Math.max(a + TL_MATURE - 1, b - Math.floor(n / 3))));
+    const ref = fitAt(wRef);
+    // ②参照線に対して右端から連続してチャネル外にある本数
+    const y = (i, off) => ref.m * (i - a) + ref.c + off;
+    let k = b;
+    while (k > a && (ls[k] < y(k, ref.dn) - ref.tol || hs[k] > y(k, ref.up) + ref.tol)) k--;
+    // ③ずれの分だけ窓を後退（順行なら TL_FRESH 本だけ = 従来の引き直し）
+    e = Math.max(wRef, b - Math.max(TL_FRESH, b - k));
+  }
+  return fitAt(e);
 }
 
 // チャネル幅が平均価格の TL_COHERENT_FRAC 以内なら「一貫したチャネル」とみなす。
@@ -544,7 +676,8 @@ function computeChannels() {
   // 右端まで届いたチャネルはさらに未来へ TL_EXTEND 本延長。延長部分は色を変える。
   const lines = [];
   for (const s of segs) {
-    const { m, c, up, dn } = fitChannel(s.a, s.b, hs, ls, cs);
+    s.fit = touchFit(s.a, s.b, hs, ls, cs); // シグナル判定も同じ線を使う
+    const { m, c, up, dn } = s.fit;
     const tol = (up - dn) * TL_FIT_TOL;
     const y = (i, off) => m * (i - s.a) + c + off;
     const fits = (i) => hs[i] <= y(i, up) + tol && ls[i] >= y(i, dn) - tol;
@@ -555,14 +688,27 @@ function computeChannels() {
     let R = s.b;
     while (R < Math.min(ks.length - 1, s.b + len) && fits(R + 1)) R++;
     s.L = L; s.R = R; // シグナル判定は延長込みのフィット確認済み範囲で行う
-    // 未来への延長は緩やかなチャネルのみ。急勾配の外挿は右端の空間に
-    // 宙に浮いた短い急斜線を生むだけで紛らわしい
-    if (R === ks.length - 1 && Math.abs(m) * TL_EXTEND <= 0.35 * (up - dn)) R += TL_EXTEND;
+    // 未来への延長。確立した線を右へ延ばして「今の足が線のどちら側か」を
+    // 見せるのが目的（ユーザー指示 2026-07-25「右端の足で切れている」）なので
+    // 基本は常に延長する。ただし延長中の変位がチャネル幅を超える急勾配
+    //（急落チャネル等）だけは、右端の空間に宙に浮いた急斜線になるため除外
+    //（過去に「バグでは」と指摘された失敗形 — 0.35 幅では 2026-07 の上昇
+    // チャネルまで延長ゼロになったため緩和。閾値は8本あたり幅1.0で、
+    // TL_EXTEND を伸ばしても除外対象が変わらないようスケールさせる）。
+    if (R === ks.length - 1 && Math.abs(m) * 8 <= up - dn) R += TL_EXTEND;
     for (const off of [up, dn]) {
       const pt = (i) => ({ time: t(i), value: y(i, off) });
       lines.push({ color: TL_COLOR, pts: [pt(s.a), pt(s.b)] });
       if (L < s.a) lines.push({ color: TL_EXT_COLOR, pts: [pt(L), pt(s.a)] });
-      if (R > s.b) lines.push({ color: TL_EXT_COLOR, pts: [pt(s.b), pt(R)] });
+      if (R > s.b) {
+        // 未来領域はバーごとに点を打つ。lightweight-charts のタイムスケールは
+        // 実在する時刻スロット単位のため、端点2つだけだと未来の中間時刻が
+        // スロットにならず、延長線が右端の数スロットに圧縮されて
+        // ほぼ垂直の壁に見える（TL_EXTEND=24 で顕在化した実害）。
+        const pts = [];
+        for (let i = s.b; i <= R; i++) pts.push(pt(i));
+        lines.push({ color: TL_EXT_COLOR, pts });
+      }
     }
   }
   state.tlLines = lines; // 検証用（puppeteer からの確認に使う）
@@ -593,18 +739,20 @@ function computeTlSignals(segs, hs, ls, cs, t) {
   let liveUp = -1, liveDn = -1; // live チャネル自身の直近 ▲/▼ の足 index
   const sigs = new Map(); // "index:dir" -> {i, dir}（同一足の重複シグナルは1つに）
   for (const s of segs) {
-    const { m, c, up, dn } = fitChannel(s.a, s.b, hs, ls, cs);
+    const { m, c, up, dn } = s.fit; // computeChannels が接触最大化フィットを格納済み
     const y = (i, off) => m * (i - s.a) + c + off;
     // 評価は左右の延長を含む「バーがチャネルに収まると確認済みの範囲」全体
     //（例: 持ち合い天井の延長線を BB 上バンドが突き抜ける = 過熱シグナル）
     for (let i = Math.max(s.L ?? s.a, p); i <= Math.min(s.R ?? s.b, cs.length - 1); i++) {
-      if (bbLo[i - 1] >= y(i - 1, dn) && bbLo[i] < y(i, dn)) {
-        sigs.set(i + ":-1", { i, dir: -1 });
-        if (s === live && i > liveDn) liveDn = i;
-      }
-      if (bbUp[i - 1] <= y(i - 1, up) && bbUp[i] > y(i, up)) {
-        sigs.set(i + ":1", { i, dir: 1 });
-        if (s === live && i > liveUp) liveUp = i;
+      if (bbLo[i - 1] >= y(i - 1, dn) && bbLo[i] < y(i, dn)) sigs.set(i + ":-1", { i, dir: -1 });
+      if (bbUp[i - 1] <= y(i - 1, up) && bbUp[i] > y(i, up)) sigs.set(i + ":1", { i, dir: 1 });
+      // パターン監視の live 判定は交差（エッジ）でなく「線の外にいる」状態で持続させる。
+      // 凍結フィットでは破断後も線が動かず BB が外に留まり続けるため、
+      // 交差起点だと5日で時効になり、まさに警戒すべき期間に calm へ戻ってしまう
+      //（2026-01 バックテストで実証 — 交差は 12/18 なのに滝は 1/28）。
+      if (s === live) {
+        if (bbLo[i] < y(i, dn) && i > liveDn) liveDn = i;
+        if (bbUp[i] > y(i, up) && i > liveUp) liveUp = i;
       }
     }
   }
@@ -620,7 +768,7 @@ function computeTlSignals(segs, hs, ls, cs, t) {
   // 右端の live チャネルが同じ形なら、その進行段階をバッジで示す。
   state.tlWatch = null;
   if (live) {
-    const f = fitChannel(live.a, live.b, hs, ls, cs);
+    const f = live.fit;
     const w = f.up - f.dn;
     const age = cs.length - live.a;
     // 「緩い」= 明確な下降でなく（幅を50本未満で割り込む傾きは除外）、
