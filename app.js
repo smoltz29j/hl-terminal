@@ -269,6 +269,9 @@ const TL_COHERENT_FRAC = 0.22; // 「一貫したチャネル」とみなす幅�
 const TL_COARSE_MIN = 10;      // 長期（トップダウン分割）チャネルの最小本数
 const TL_FAST_BARS = 12;       // 長期バンドをこの本数未満で横断する傾き差 = 「急変」チャネル
 const TL_RECENT_CRASH = 90;    // 急変チャネルを残す新しさ（本数）。それより古い断片は消す
+const TL_LEG_WIDTH = 0.6;      // 長期内レッグを残す幅比の上限（対 長期チャネル幅）
+const TL_LEG_RUN = 1.5;        // 長期内レッグを残す直進性の下限（|傾き|×本数 ÷ 自幅）
+const TL_BOX_RUN = 1.2;        // 長期箱を描画する直進性の下限 — これ未満 = もみ合い（線を引かない）
 const TL_MAX_CHANNELS = 16; // 描画上限（クラッタ防止）
 const TL_EXTEND = 24;       // 右端に届くチャネルの未来方向への延長本数（ユーザー指示 2026-07-25 で 8→24）
 const TL_FIT_TOL = 0.2;     // 延長続行の許容はみ出し（チャネル幅に対する比）
@@ -651,10 +654,18 @@ function computeChannels() {
     const dup = segs.some((t) => Math.abs(t.a - s.a) + Math.abs(t.b - s.b) < len * 0.3);
     if (dup) continue;
     // 短期/中期チャネルは「大トレンド把握」のテーゼに合わせ、
-    //   ①右端に届く現況チャネル、または
+    //   ①右端に届く現況チャネル、
     //   ②直近 TL_RECENT_CRASH 本以内の急変（重なる長期バンドを TL_FAST_BARS 本
-    //     未満で横断する傾き差 = 急落/急騰）
+    //     未満で横断する傾き差 = 急落/急騰）、または
+    //   ③直近 TL_RECENT_CRASH 本以内の「長期箱の内側のタイトな直進レッグ」
+    //    （幅が長期の TL_LEG_WIDTH 倍以下・自身の幅の TL_LEG_RUN 倍以上を走る）
     // だけ残す。過去の細かいレッグや長期内を漂うだけの中間チャネルは消す。
+    // ③はユーザーの相場構造「急落 → もみ合い → 上昇」（2026-07-25）のため:
+    // もみ合いと上昇レッグが1つの長期箱に融合すると下線がもみ合いの底に
+    // 引きずられる（例: 2026-02〜05 の箱の中の 3/29〜5/6 上昇 — 傾きが箱と
+    // 似ていて②では残らない）。閾値は実データで選定: 0.6/1.5 だと 4月レッグ
+    // だけが通り、6月もみ合い内の弱い反発（直進性0.49）や 5月の天井もたれ
+    //（1.48）は引き続き抑制される。
     if (s.k !== 99 && s.b < ks.length - 3) {
       if (ks.length - 1 - s.b > TL_RECENT_CRASH) continue;
       const fs = fitChannel(s.a, s.b, hs, ls, cs);
@@ -663,7 +674,10 @@ function computeChannels() {
         .sort((x, y) => overlap(y) - overlap(x))[0];
       if (c) {
         const fc = fitChannel(c.a, c.b, hs, ls, cs);
-        if (Math.abs(fs.m - fc.m) < (fc.up - fc.dn) / TL_FAST_BARS) continue;
+        const w = fs.up - fs.dn;
+        const tightLeg = w <= TL_LEG_WIDTH * (fc.up - fc.dn) &&
+          Math.abs(fs.m) * len >= TL_LEG_RUN * w;
+        if (!tightLeg && Math.abs(fs.m - fc.m) < (fc.up - fc.dn) / TL_FAST_BARS) continue;
       }
     }
     segs.push(s);
@@ -696,6 +710,14 @@ function computeChannels() {
     // チャネルまで延長ゼロになったため緩和。閾値は8本あたり幅1.0で、
     // TL_EXTEND を伸ばしても除外対象が変わらないようスケールさせる）。
     if (R === ks.length - 1 && Math.abs(m) * 8 <= up - dn) R += TL_EXTEND;
+    // もみ合いの長期箱は線を描かない（ユーザーの売買方針 2026-07-25:
+    // 「急落を早く見つけてショート / もみ合いはトレードしない / 上昇が見えたら
+    // ロング」— 線を引く価値があるのは急落と上昇のトレンドチャネルだけ。
+    // もみ合いは ▼/▲・パターン監視のシグナル計算にだけ使う）。判定は直進性
+    // |傾き|×本数 ÷ 幅 — 実データでは箱 0.27〜0.96 vs トレンド 1.53〜1.87 と
+    // 明確に分かれる（Feb-May の V字箱も touchFit 傾きなら 0.96）。
+    s.hidden = s.k === 99 && Math.abs(m) * len < TL_BOX_RUN * (up - dn);
+    if (s.hidden) continue;
     for (const off of [up, dn]) {
       const pt = (i) => ({ time: t(i), value: y(i, off) });
       lines.push({ color: TL_COLOR, pts: [pt(s.a), pt(s.b)] });
