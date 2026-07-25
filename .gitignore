@@ -7,3 +7,5 @@ IMG_*.jpeg
 # TLS 証明書（mkcert のローカル CA 発行。秘密鍵を公開リポジトリに入れない）
 certs/
 スクリーンショット*.png
+tools/crash_watch_state.json
+tools/crash_watch.log
