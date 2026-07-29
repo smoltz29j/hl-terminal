@@ -1053,7 +1053,9 @@ function setupChart() {
     timeScale: {
       visible: false,
       rightOffset: 5,
-      shiftVisibleRangeOnNewBar: true,
+      // 自動シフトは使わない — TL の未来延長スロットが画面外にあると発火せず、
+      // 無いと onmessage の手動シフトと二重になる。追従は onmessage 側で一元管理
+      shiftVisibleRangeOnNewBar: false,
     },
   });
   candleSeries = chart.addCandlestickSeries({
@@ -1344,9 +1346,17 @@ function connect() {
           updateIndicatorsLast();
           if (isNewBar) computeChannels(); // 新バーでピボット・区間が変わり得る
           syncPriceScaleWidths(); // 桁数の変化で価格軸幅が変わることがある
-          // 足が切り替わったら右端へ追従（過去を見るためスクロール中は追従しない）
-          if (isNewBar && chart.timeScale().scrollPosition() > -3) {
-            chart.timeScale().scrollToRealTime();
+          // 足が切り替わったら1本ぶん左へ追従（過去を見るためスクロール中は追従しない）。
+          // ⚠scrollPosition()/scrollToRealTime() は使わない — 両者とも時間軸の「最新点」基準で、
+          // TL の未来延長（TL_EXTEND 本の先付きスロット）があると scrollPosition が常に約 -20 に
+          // なり追従条件が死ぬ（TL_EXTEND=24 で顕在化した実害。scrollToRealTime も延長の先端まで
+          // 飛ぶ）。最終ローソクの論理位置を基準に、ズームを保ったまま表示範囲を手動シフトする
+          if (isNewBar) {
+            const lr = chart.timeScale().getVisibleLogicalRange();
+            const lastIdx = state.candles.length - 1;
+            if (lr && lr.to > lastIdx - 2) {
+              chart.timeScale().setVisibleLogicalRange({ from: lr.from + 1, to: lr.to + 1 });
+            }
           }
         }
         break;
