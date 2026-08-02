@@ -8,7 +8,7 @@
 // TL ロジックは app.js から実行時に抜き出して評価する（二重実装を避け、
 // app.js 側のチューニングに自動追従する）。判定は日足・公式 mainnet API。
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
-import { execFileSync, execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -37,6 +37,7 @@ async function fetchCandles() {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ type: "candleSnapshot", req: {
       coin: "BTC", interval: "1d", startTime: end - 310 * 86400000, endTime: end } }),
+    signal: AbortSignal.timeout(20000), // ハングすると cron 起動の node が積み重なる
   });
   if (!res.ok) throw new Error(`candleSnapshot ${res.status}`);
   return (await res.json()).slice(-300);
@@ -158,10 +159,11 @@ function analyze(ks) {
       if (bbUp[i] > y(i, up) && i > liveUp) liveUp = i;
     }
   }
-  // 局面（SMA200）
+  // 局面（SMA200）。データが200本未満でも NaN 化して黙って bull に倒れないよう手当て
+  const m200 = Math.min(200, n);
   let s200 = 0;
-  for (let i = n - 200; i < n; i++) s200 += cs[i];
-  const regime = cs[n - 1] < s200 / 200 ? "bear" : "bull";
+  for (let i = n - m200; i < n; i++) s200 += cs[i];
+  const regime = cs[n - 1] < s200 / m200 ? "bear" : "bull";
 
   let stage = "none";
   if (live) {
@@ -187,7 +189,15 @@ function analyze(ks) {
 }
 
 // ---- レベル判定（app.js updateCrashAlert と同一）+ メッセージ ----
-const ks = await fetchCandles();
+// このツールの存在意義は「急落を見逃さない」こと — API 障害でこのプロセス自体が
+// 未処理例外で沈黙すると本末転倒なので、失敗はログに残して終了コードで示す
+let ks;
+try {
+  ks = await fetchCandles();
+} catch (e) {
+  console.error(`${new Date().toISOString()} crash_watch: candleSnapshot 取得失敗 — ${e?.message ?? e}`);
+  process.exit(1);
+}
 const a = analyze(ks);
 const hist = fetchDemand();
 const spot = demandDir(hist, ["bspot", "cspot"]);
@@ -224,7 +234,8 @@ if (!PEEK) {
     const head = fakeout ? "HL: 破断→回復 — 騙しだった可能性"
       : level >= 3 ? "🚨 HL 急落警報 Lv3" : level >= 2 ? "⚠ HL 急落警戒 Lv2" : "HL 監視状態変化";
     try {
-      execSync(`notify-send -u ${level >= 3 ? "critical" : "normal"} ${JSON.stringify(head)} ${JSON.stringify(text)}`, {
+      // 引数配列で渡す（シェル文字列組み立ては将来文言に引用符が入ると壊れる）
+      execFileSync("notify-send", ["-u", level >= 3 ? "critical" : "normal", head, text], {
         env: { ...process.env, DISPLAY: process.env.DISPLAY || ":0",
           DBUS_SESSION_BUS_ADDRESS: process.env.DBUS_SESSION_BUS_ADDRESS ||
             `unix:path=/run/user/${process.getuid()}/bus` },

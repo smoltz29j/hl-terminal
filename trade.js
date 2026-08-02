@@ -44,6 +44,8 @@ async function exchangePost(action, signature, nonce) {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ action, nonce, signature, vaultAddress: null, expiresAfter: null }),
+    // ハングすると busy フラグが張られたまま発注ボタンが死ぬ（リロード以外に回復手段がない）
+    signal: AbortSignal.timeout(15000),
   });
   let j;
   try { j = await r.json(); } catch { throw new Error(`HTTP ${r.status}`); }
@@ -117,7 +119,15 @@ function errMsg(e) {
   const m = String(e?.message ?? e);
   if (/must deposit/i.test(m)) return T(`このアカウントは ${NET.isMainnet ? "mainnet" : "testnet"} に入金がありません`, `This account has no deposit on ${NET.isMainnet ? "mainnet" : "testnet"}`);
   if (/user rejected|denied/i.test(m)) return T("署名がキャンセルされました", "Signature cancelled");
+  if (e?.name === "TimeoutError" || /timed out/i.test(m)) return T("サーバー応答がタイムアウトしました。注文状態を Open Orders で確認してください", "Server timed out. Check Open Orders for the order state");
   return m.length > 200 ? m.slice(0, 200) + "…" : m;
+}
+
+// 指値価格を Hyperliquid の精度規則（有効数字5桁・小数 6-szDecimals 桁。整数は常に可）に丸める。
+// 丸めずに送るとサーバーが分かりにくい文言で reject する。丸め後の値は confirm に表示される
+function roundPx(px, szd) {
+  if (Number.isInteger(px)) return px;
+  return Number(Number(px.toPrecision(5)).toFixed(Math.max(0, 6 - szd)));
 }
 
 // ---------- 発注・キャンセル ----------
@@ -126,15 +136,22 @@ async function submitOrder() {
   if (trade.busy || !tradeReady()) return;
   const coin = state.coin;
   const asset = state.assetIds[coin];
-  const szd = state.szDecimals[coin] ?? 0;
+  const szd = state.szDecimals[coin];
   const isBuy = trade.side === "buy";
   try {
     if (asset == null) throw new Error(T("この銘柄は発注に未対応です", "Ordering is not supported for this symbol"));
+    // szDecimals 未取得のまま 0 桁に丸めると数量が整数へ潰れる（誤サイズ発注）— 必ず止める
+    if (szd == null) throw new Error(T("銘柄情報が未取得です。少し待って再試行してください", "Symbol metadata not loaded yet. Retry in a moment"));
     const sz = Number(parsePositive($("tf-sz").value, T("数量", "size")).toFixed(szd));
     if (sz <= 0) throw new Error(T(`数量が最小単位（${Math.pow(10, -szd)}）未満です`, `Size is below the minimum unit (${Math.pow(10, -szd)})`));
     let px, tif;
     if (trade.type === "market") { px = slippagePx(isBuy, szd); tif = "Ioc"; }
-    else { px = parsePositive($("tf-px").value, T("価格", "price")); tif = "Gtc"; }
+    else { px = roundPx(parsePositive($("tf-px").value, T("価格", "price")), szd); tif = "Gtc"; }
+    // 取引所の最小注文金額（$10）。Reduce Only はダスト決済があり得るため対象外
+    const ntl = sz * (trade.type === "market" ? state.markPx : px);
+    if (!$("tf-ro").checked && ntl < 10) {
+      throw new Error(T(`注文金額が最小の $10 未満です（≈ $${ntl.toFixed(2)}）`, `Order value is below the $10 minimum (≈ $${ntl.toFixed(2)})`));
+    }
 
     const label = T(`${coin} ${isBuy ? "買い" : "売り"} ${sz} @ ${trade.type === "market" ? "成行" : px}`,
       `${coin} ${isBuy ? "Buy" : "Sell"} ${sz} @ ${trade.type === "market" ? "market" : px}`);
@@ -172,7 +189,8 @@ async function submitOrder() {
 }
 
 async function cancelOrder(coin, oid) {
-  if (!tradeReady()) return;
+  if (trade.busy || !tradeReady()) return;
+  trade.busy = true; // テーブルのボタンは再描画まで生きている — 連打の二重送信を防ぐ
   try {
     const action = { type: "cancel", cancels: [{ a: state.assetIds[coin], o: oid }] };
     const nonce = Date.now();
@@ -187,21 +205,25 @@ async function cancelOrder(coin, oid) {
     handleAgentError(e);
     tradeStatus(errMsg(e), "err");
     alert(T("キャンセルに失敗:\n", "Cancel failed:\n") + errMsg(e));
+  } finally {
+    trade.busy = false;
   }
 }
 
 // 既存指値の価格・数量を変更（batchModify）。tif / reduceOnly は元の注文から引き継ぐ
 async function modifyOrder(oid) {
-  if (!tradeReady()) return;
+  if (trade.busy || !tradeReady()) return;
   const o = state.openOrders.find((x) => x.oid === oid);
   if (!o) { tradeStatus(T("注文が見つかりません（更新直後の可能性）", "Order not found (it may have just changed)"), "err"); return; }
+  trade.busy = true;
   try {
+    const szd = state.szDecimals[o.coin];
+    if (szd == null) throw new Error(T("銘柄情報が未取得です。少し待って再試行してください", "Symbol metadata not loaded yet. Retry in a moment"));
     const pxIn = prompt(T(`${o.coin} ${o.side === "B" ? "買い" : "売り"} の新しい価格:`, `New price for ${o.coin} ${o.side === "B" ? "buy" : "sell"}:`), o.limitPx);
     if (pxIn === null) return;
     const szIn = prompt(T("新しい数量:", "New size:"), o.sz);
     if (szIn === null) return;
-    const px = parsePositive(pxIn, T("価格", "price"));
-    const szd = state.szDecimals[o.coin] ?? 0;
+    const px = roundPx(parsePositive(pxIn, T("価格", "price")), szd);
     const sz = Number(parsePositive(szIn, T("数量", "size")).toFixed(szd));
     if (sz <= 0) throw new Error(T(`数量が最小単位（${Math.pow(10, -szd)}）未満です`, `Size is below the minimum unit (${Math.pow(10, -szd)})`));
 
@@ -232,21 +254,25 @@ async function modifyOrder(oid) {
     handleAgentError(e);
     tradeStatus(errMsg(e), "err");
     alert(T("注文修正に失敗:\n", "Modify failed:\n") + errMsg(e)); // テーブル操作はステータス行が目に入りにくいため明示
+  } finally {
+    trade.busy = false;
   }
 }
 
 // ポジションをクローズ（Reduce Only）。数量指定で部分クローズ、価格指定で指値クローズ可
 async function closePosition(coin) {
-  if (!tradeReady()) return;
+  if (trade.busy || !tradeReady()) return;
   const p = state.positions.find((x) => x.coin === coin);
   if (!p) { tradeStatus(T("ポジションが見つかりません", "Position not found"), "err"); return; }
+  trade.busy = true;
   try {
     const szi = Number(p.szi);
     const isBuy = szi < 0; // ショートは買い戻し、ロングは売り
     const maxSz = Math.abs(szi);
     const asset = state.assetIds[coin];
     if (asset == null) throw new Error(T("この銘柄はクローズ操作に未対応です", "Closing is not supported for this symbol"));
-    const szd = state.szDecimals[coin] ?? 0;
+    const szd = state.szDecimals[coin];
+    if (szd == null) throw new Error(T("銘柄情報が未取得です。少し待って再試行してください", "Symbol metadata not loaded yet. Retry in a moment"));
 
     const szIn = prompt(T(`${coin} のクローズ数量（最大 ${maxSz}）:`, `Close size for ${coin} (max ${maxSz}):`), maxSz);
     if (szIn === null) return;
@@ -266,7 +292,7 @@ async function closePosition(coin) {
       tif = "Ioc";
       kind = T("成行", "market");
     } else {
-      px = parsePositive(pxIn, T("価格", "price"));
+      px = roundPx(parsePositive(pxIn, T("価格", "price")), szd);
       tif = "Gtc";
       kind = T(`指値 ${px}`, `limit ${px}`);
     }
@@ -296,6 +322,8 @@ async function closePosition(coin) {
     handleAgentError(e);
     tradeStatus(errMsg(e), "err");
     alert(T("クローズに失敗:\n", "Close failed:\n") + errMsg(e));
+  } finally {
+    trade.busy = false;
   }
 }
 
@@ -625,7 +653,9 @@ async function depositFunds() {
 }
 
 function handleAgentError(e) {
-  if (/does not exist|not registered|api wallet/i.test(String(e?.message ?? e))) {
+  // agent 失効の実文言は「User or API Wallet 0x… does not exist.」— agent/API Wallet に
+  // 言及するものだけに絞る（"Asset does not exist" 等で有効な鍵を誤破棄しないように）
+  if (/(api wallet|agent).*(does not exist|not registered)/i.test(String(e?.message ?? e))) {
     dropAgent();
     renderTradePane();
   }
@@ -689,8 +719,12 @@ function updateSubmitButton() {
 }
 
 function updateNotional() {
-  const sz = Number($("tf-sz").value);
-  const px = trade.type === "market" ? state.markPx : Number($("tf-px").value);
+  // parsePositive と同じ全角正規化（例外は投げず、不正なら表示を消すだけ）
+  const num = (s) => Number(String(s)
+    .replace(/[０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0))
+    .replace(/[．。]/g, ".").replace(/[,，\s]/g, ""));
+  const sz = num($("tf-sz").value);
+  const px = trade.type === "market" ? state.markPx : num($("tf-px").value);
   const el = $("tf-notional");
   el.textContent = sz > 0 && px > 0 ? "≈ " + fmtUsd2(sz * px) : "";
 }
@@ -705,6 +739,7 @@ function tradeOnUser() {
 function tradeOnCoinChange() {
   $("tf-coin").textContent = state.coin;
   $("tf-px").value = "";
+  $("tf-sz").value = ""; // 前銘柄の数量を持ち越すと桁違いのサイズで発注しかねない
   updateSubmitButton();
   refreshLeverage();
 }

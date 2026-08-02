@@ -21,6 +21,28 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def __init__(self, *a, **kw):
         super().__init__(*a, directory=ROOT, **kw)
 
+    # 配信していいのは静的アセットだけ。ドットパス（.git 等）と certs/ の
+    # rootCA.pem 以外（= TLS 秘密鍵 key.pem を含む）は 403 で遮断する
+    def _forbidden(self):
+        rel = os.path.relpath(self.translate_path(self.path), ROOT)
+        parts = rel.split(os.sep)
+        if any(p.startswith(".") for p in parts if p != "."):  # "." はルート自身
+            return True
+        if parts[0] == "certs" and parts[-1] != "rootCA.pem":
+            return True
+        return False
+
+    def send_head(self):
+        if self._forbidden():
+            self.send_error(403)
+            return None
+        return super().send_head()
+
+    def list_directory(self, path):
+        # ディレクトリ一覧は出さない（certs/ 等の中身を露出させない）
+        self.send_error(403)
+        return None
+
 
 if __name__ == "__main__":
     srv = http.server.ThreadingHTTPServer(("0.0.0.0", PORT), Handler)

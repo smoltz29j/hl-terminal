@@ -10,6 +10,9 @@ Hyperliquid の独自フロントエンド「HL Terminal」。リアルタイム
 
 ```
 ./run.sh [port]   # デフォルト 8010。serve.py（certs/ があれば https、無ければ http）で 0.0.0.0 に配信
+# serve.py はドットパス（.git 等）と certs/ の rootCA.pem 以外（TLS 秘密鍵 key.pem 含む）を 403 で
+# 遮断し、ディレクトリ一覧も無効（2026-08-02 — それまで key.pem が LAN に露出していた）。
+# certs/ に配信すべきファイルを増やす場合は serve.py の _forbidden を更新すること
 ```
 
 elwhite (192.168.101.201) 上で動かし、LAN のブラウザから **`https://192.168.101.201:8010/`** で開く想定（2026-07-22 に https 化 — LAN 上の JS 改ざん対策）。ビルド・テスト・lint は無し。ufw は 8010/tcp を 192.168.101.0/24 に対して許可済み（2026-07-11。https 化はポート不変なので追加ルール不要。**実需 wss の 8766 は要 ufw 許可**）。

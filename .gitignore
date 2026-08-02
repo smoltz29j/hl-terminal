@@ -9,3 +9,4 @@ certs/
 スクリーンショット*.png
 tools/crash_watch_state.json
 tools/crash_watch.log
+__pycache__/

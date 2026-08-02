@@ -71,6 +71,18 @@ const FRAMED = window.self !== window.top;
 
 const $ = (id) => document.getElementById(id);
 
+// localStorage はプライベートモード等で例外を投げる — 保存失敗で呼び出し元の
+// 処理（銘柄切替の購読等）を巻き込まないよう、書き込みは必ずこれを通す
+function safeSet(key, val) {
+  try { localStorage.setItem(key, val); } catch { /* private mode 等 */ }
+}
+
+// API 由来の文字列を innerHTML に埋めるときのエスケープ（カスタム接続先は信頼できない）
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
 // ---------- 表示言語（JP/EN 切替。既定 JP） ----------
 // 動的文字列は T("日本語","English") をインラインで併記する方式（辞書キーの管理を避ける）。
 // 静的 HTML は日本語で書き、EN のときだけ applyLang() が差し替える。切替は reload。
@@ -852,7 +864,8 @@ function demandConnect() {
   let ws;
   try { ws = new WebSocket(DEMAND_URL); } catch { return; }
   ws.onmessage = (ev) => {
-    const msg = JSON.parse(ev.data);
+    let msg;
+    try { msg = JSON.parse(ev.data); } catch { return; }
     if (msg.type === "snap") demand.points = msg.history;
     else if (msg.type === "tick") demand.points.push(msg.p);
     if (demand.points.length > 900) demand.points.splice(0, demand.points.length - 900);
@@ -950,7 +963,7 @@ function updateCrashAlert() {
   if (lv >= 3 && PANE !== "2") {
     const key = new Date().toISOString().slice(0, 10) + ":" + lv;
     if (localStorage.getItem("hlt-alerted") !== key) {
-      localStorage.setItem("hlt-alerted", key);
+      safeSet("hlt-alerted", key);
       notifyCrash(el.textContent);
       beep();
     }
@@ -1032,7 +1045,7 @@ function renderChartLegend() {
 for (const [id, key] of [["ind-ma", "ma"], ["ind-bb", "bb"], ["ind-tl", "tl"]]) {
   $(id).addEventListener("click", () => {
     IND_CFG[key] = !IND_CFG[key];
-    localStorage.setItem("hlt-ind", JSON.stringify({ ma: IND_CFG.ma, bb: IND_CFG.bb, tl: IND_CFG.tl }));
+    safeSet("hlt-ind", JSON.stringify({ ma: IND_CFG.ma, bb: IND_CFG.bb, tl: IND_CFG.tl }));
     applyIndicatorVisibility();
   });
 }
@@ -1126,12 +1139,16 @@ function volumePoint(k) {
 }
 
 async function loadCandles() {
+  const coin = state.coin, interval = state.interval;
   const end = Date.now();
-  const start = end - CANDLE_BARS * IV_MS[state.interval];
+  const start = end - CANDLE_BARS * IV_MS[interval];
   const ks = await info({
     type: "candleSnapshot",
-    req: { coin: state.coin, interval: state.interval, startTime: start, endTime: end },
+    req: { coin, interval, startTime: start, endTime: end },
   });
+  // 銘柄・足を素早く連続切替すると古いリクエストの応答が後から届くことがある
+  // → 発行時と現在値が食い違う応答は捨てる（別の足のローソクで上書きされる事故防止）
+  if (coin !== state.coin || interval !== state.interval) return;
   state.pxDecimals = Math.max(0, ...ks.slice(-50).map((k) => decimalsOf(k.c)));
   candleSeries.applyOptions({
     priceFormat: { type: "price", precision: state.pxDecimals, minMove: Math.pow(10, -state.pxDecimals) },
@@ -1323,7 +1340,8 @@ function connect() {
 
   ws.onmessage = (ev) => {
     state.lastWsMsg = Date.now();
-    const msg = JSON.parse(ev.data);
+    let msg;
+    try { msg = JSON.parse(ev.data); } catch { return; } // 破損フレームは捨てる
     switch (msg.channel) {
       case "l2Book":
         if (msg.data.coin === state.coin) renderBook(msg.data);
@@ -1552,9 +1570,9 @@ function renderAccount(ch, orders, spotEq, stakeVal, vaultVal) {
         const mark = Math.abs(sz) > 0 ? Number(p.positionValue) / Math.abs(sz) : 0;
         const roe = (Number(p.returnOnEquity) * 100).toFixed(1);
         const close = canTrade && p.coin in state.assetIds
-          ? `<button class="close-pos" data-coin="${p.coin}" title="${T("成行でクローズ（Reduce Only）", "Market close (reduce only)")}">${T("クローズ", "Close")}</button>` : "";
+          ? `<button class="close-pos" data-coin="${esc(p.coin)}" title="${T("成行でクローズ（Reduce Only）", "Market close (reduce only)")}">${T("クローズ", "Close")}</button>` : "";
         return `<tr>
-          <td class="coin">${p.coin} <span class="tag">${p.leverage.value}x</span></td>
+          <td class="coin">${esc(p.coin)} <span class="tag">${Number(p.leverage.value)}x</span></td>
           <td class="${signCls(sz)}">${fmtNum(sz, state.szDecimals[p.coin] ?? 4)}</td>
           <td>${fmtAnyPx(p.entryPx)}</td>
           <td>${fmtAnyPx(mark)}</td>
@@ -1577,13 +1595,13 @@ function renderAccount(ch, orders, spotEq, stakeVal, vaultVal) {
           if (canTrade && o.coin in state.assetIds) {
             // 修正は通常の指値のみ（trigger/TPSL は未対応）
             if (!o.isTrigger && o.orderType === "Limit" && ["Gtc", "Alo", "Ioc"].includes(o.tif)) {
-              actions.push(`<button class="mod" data-oid="${o.oid}" title="${T("注文修正（価格・数量）", "Modify order (price/size)")}">${T("変更", "Edit")}</button>`);
+              actions.push(`<button class="mod" data-oid="${Number(o.oid)}" title="${T("注文修正（価格・数量）", "Modify order (price/size)")}">${T("変更", "Edit")}</button>`);
             }
-            actions.push(`<button class="cxl" data-coin="${o.coin}" data-oid="${o.oid}" title="${T("注文キャンセル", "Cancel order")}">${T("取消", "Cancel")}</button>`);
+            actions.push(`<button class="cxl" data-coin="${esc(o.coin)}" data-oid="${Number(o.oid)}" title="${T("注文キャンセル", "Cancel order")}">${T("取消", "Cancel")}</button>`);
           }
           const cxl = actions.join(" ");
           return `<tr>
-            <td class="coin">${o.coin}</td>
+            <td class="coin">${esc(o.coin)}</td>
             <td class="${side}">${o.side === "B" ? "Buy" : "Sell"}</td>
             <td>${fmtAnyPx(o.limitPx)}</td>
             <td>${fmtNum(o.sz, state.szDecimals[o.coin] ?? 4)}</td>
@@ -1696,6 +1714,11 @@ async function connectMetaMask() {
     }
   } catch (e) {
     console.error("MetaMask connect:", e);
+    // 失敗理由が見えないと「押しても何も起きない」に見える — モーダル内に一行出す
+    $("cm-note").textContent = /rejected|denied/i.test(String(e?.message ?? e))
+      ? T("接続がキャンセルされました。", "Connection cancelled.")
+      : T("接続に失敗しました。拡張機能/アプリの状態を確認して再試行してください。",
+          "Connection failed. Check the extension/app and try again.");
   } finally {
     btn.disabled = false;
     btn.textContent = T("MetaMask で接続", "Connect with MetaMask");
@@ -1768,16 +1791,32 @@ $("cm-watch").addEventListener("click", connectWatch);
 
 // ---------- switching ----------
 
+let switchGen = 0; // 連打対策: 並行した switchTo のうち最後の1つだけが購読を張る
+
 async function switchTo(coin, interval) {
+  const gen = ++switchGen;
   for (const s of subs(state.coin, state.interval)) wsSend("unsubscribe", s);
   const coinChanged = coin !== state.coin;
   state.coin = coin;
   state.interval = interval;
   // 2画面時はペインごとに銘柄を記憶（設定保存等での reload 後も復元される）
-  if (FRAMED) localStorage.setItem(`hlt-coin:p${PANE}`, coin);
+  if (FRAMED) safeSet(`hlt-coin:p${PANE}`, coin);
   $("asks").innerHTML = $("bids").innerHTML = $("trades").innerHTML = "";
   state.bookTime = 0; // 銘柄が変わるので板の鮮度ガードをリセット
-  await loadCandles();
+  try {
+    await loadCandles();
+  } catch (e) {
+    // 取得失敗でも購読までは進める（新バーから復帰できる）。古い銘柄の足は残さない
+    console.error("switchTo loadCandles:", e);
+    if (gen === switchGen) {
+      state.candles = [];
+      state.lastCandleT = 0;
+      candleSeries.setData([]);
+      volumeSeries.setData([]);
+      computeIndicators();
+    }
+  }
+  if (gen !== switchGen) return; // 後続の switchTo が走っている — 購読はそちらに任せる
   for (const s of subs(coin, interval)) wsSend("subscribe", s);
   if (coinChanged && typeof tradeOnCoinChange === "function") tradeOnCoinChange();
 }
@@ -1854,7 +1893,7 @@ for (const btn of document.querySelectorAll("#intervals button")) {
     btn.hidden = !pc.matches;
   };
   btn.addEventListener("click", () => {
-    localStorage.setItem("hlt-view", "duo");
+    safeSet("hlt-view", "duo");
     location.href = "duo.html";
   });
   pc.addEventListener("change", render);
@@ -1888,7 +1927,7 @@ function saveSettings() {
     if (!/^https?:\/\/.+/.test(cfg.http)) { alert(T("HTTP URL の形式が不正です（例: https://api.example.com）", "Invalid HTTP URL (e.g. https://api.example.com)")); return; }
     if (cfg.ws && !/^wss?:\/\/.+/.test(cfg.ws)) { alert(T("WS URL の形式が不正です（例: wss://api.example.com/ws）", "Invalid WS URL (e.g. wss://api.example.com/ws)")); return; }
   }
-  localStorage.setItem("hlt-api", JSON.stringify(cfg));
+  safeSet("hlt-api", JSON.stringify(cfg));
   location.reload(); // 接続・購読・アカウント状態を丸ごと作り直すため再読込が最も安全
 }
 
@@ -1933,7 +1972,7 @@ function applyLang() {
     langBtn.textContent = LANG === "en" ? "EN" : "JP";
     langBtn.title = T("表示言語の切替", "Language");
     langBtn.addEventListener("click", () => {
-      localStorage.setItem("hlt-lang", LANG === "en" ? "jp" : "en");
+      safeSet("hlt-lang", LANG === "en" ? "jp" : "en");
       location.reload();
     });
   }
@@ -2015,8 +2054,16 @@ function applyLang() {
   setupChart();
   applyIndicatorVisibility();
   renderNetBadge();
-  await loadCoins();
-  await loadCandles();
+  // 起動直後に API が一瞬不安定でも白画面のまま止まらないよう、初期ロードは
+  // 成功するまで指数バックオフで再試行する（失敗すると以降の connect() まで届かない）
+  for (let delay = 2000; ; delay = Math.min(delay * 2, 30000)) {
+    try { await loadCoins(); await loadCandles(); break; }
+    catch (e) {
+      console.error("boot load:", e);
+      $("conn").title = T("初期データの取得に失敗 — 再試行中…", "Initial load failed — retrying…");
+      await new Promise((r) => setTimeout(r, delay));
+    }
+  }
   loadTicker(); // 初期値。以後は WS activeAssetCtx で更新
   connect();
   demandConnect();
