@@ -38,6 +38,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return None
         return super().send_head()
 
+    # HTML は no-cache（毎回サーバーに確認 = If-Modified-Since で 304 になるだけ）。
+    # これが無いとブラウザが index.html/duo.html をヒューリスティックにキャッシュし、
+    # 古い HTML が古い ?v= の JS を参照し続けて更新が届かない（iPhone Safari で実害、
+    # 2026-08-21 には PC でも「表示が変わらない」が発生）。JS/CSS は ?v= バスターで
+    # 更新されるためキャッシュ許容（no-cache にしない — 板1秒ポーリング等の負荷を増やさない）。
+    def end_headers(self):
+        if self.path.split("?")[0].split("/")[-1] in ("", "index.html", "duo.html"):
+            self.send_header("Cache-Control", "no-cache")
+        super().end_headers()
+
     def list_directory(self, path):
         # ディレクトリ一覧は出さない（certs/ 等の中身を露出させない）
         self.send_error(403)
