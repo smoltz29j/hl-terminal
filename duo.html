@@ -7,7 +7,7 @@
 <link rel="icon" href="data:,">
 <!-- style.css を link し、#topbar / #wallet-btn / #split-btn / #settings-btn / #ticker の
      id を本体とあえて同じにして見た目を共有する（別ドキュメントなので id 重複にはならない） -->
-<link rel="stylesheet" href="style.css?v=42">
+<link rel="stylesheet" href="style.css?v=43">
 <style>
   html, body { height: 100%; }
   #wrap { flex: 1; display: flex; min-height: 0; }
@@ -40,6 +40,7 @@
   <div id="acct-summary">
     <div class="stat"><span class="label">総資産</span><span id="ac-equity" class="value">–</span></div>
     <div class="stat" title="Spot 口座の評価額（Perps 担保に拘束中の USDC は除く）。総資産に合算されます"><span class="label">Spot 残高</span><span id="ac-spot" class="value">–</span></div>
+    <div class="stat"><span class="label">ステーキング</span><span id="ac-stake" class="value">–</span></div>
     <div class="stat" title="新規建てに使える額（Perps 余力 + Spot 可用 USDC — 統合残高方式では Spot からも自動充当される）"><span class="label">取引可能</span><span id="ac-avail" class="value">–</span></div>
     <div class="stat" title="出金できる額の目安（Spot 可用 USDC + Perps withdrawable）"><span class="label">引き出し可能</span><span id="ac-withdraw" class="value">–</span></div>
     <div class="stat"><span class="label">証拠金使用中</span><span id="ac-margin" class="value">–</span></div>
@@ -78,9 +79,10 @@ if (LANG === "en") {
   sp.textContent = "Single";
   sp.title = "Back to single view";
   document.getElementById("settings-btn").title = "API endpoint settings";
-  const acctLabels = ["Equity", "Spot Balance", "Available to Trade", "Withdrawable", "Margin Used", "uPnL"];
+  const acctLabels = ["Equity", "Spot Balance", "Staking", "Available to Trade", "Withdrawable", "Margin Used", "uPnL"];
   const acctTitles = [null,
     "Spot account value (excluding USDC held as perps collateral) — included in Equity",
+    null, // ステーキングの tooltip は renderAccount が動的に設定
     "Available for new positions (perps free margin + available spot USDC — unified balance draws from spot automatically)",
     "Estimated withdrawable (available spot USDC + perps withdrawable)",
     null, null];

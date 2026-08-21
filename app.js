@@ -1522,13 +1522,13 @@ async function refreshAccount(force) {
       ? (Number(staking.delegated) + Number(staking.undelegated) + Number(staking.totalPendingWithdrawal)) * Number(mids.HYPE)
       : 0;
     const vaultVal = Number(wd?.totalVaultEquity) || 0;
-    renderAccount(ch, orders, spotEq, stakeVal, vaultVal);
+    renderAccount(ch, orders, spotEq, stakeVal, vaultVal, staking, Number(mids?.HYPE) || 0);
   } catch (e) {
     console.error("account refresh failed:", e);
   }
 }
 
-function renderAccount(ch, orders, spotEq, stakeVal, vaultVal) {
+function renderAccount(ch, orders, spotEq, stakeVal, vaultVal, staking, hypePx) {
   const positions = ch.assetPositions.map((p) => p.position);
   state.positions = positions;
   const canTrade = typeof tradeReady === "function" && tradeReady();
@@ -1546,6 +1546,20 @@ function renderAccount(ch, orders, spotEq, stakeVal, vaultVal) {
         `Perps ${fmtUsd2(perpVal)} + spot ${fmtUsd2(spotVal)} + staking ${fmtUsd2(stakeVal)} + vaults ${fmtUsd2(vaultVal)}`);
   const spEl = acct("ac-spot");
   if (spEl) spEl.textContent = spotVal == null ? "–" : fmtUsd2(spotVal);
+  // ステーキング中 HYPE（delegatorSummary の3区分合計）。値は総資産と同じ stakeVal を表示し二重計算しない
+  const stEl = acct("ac-stake");
+  if (stEl) {
+    if (staking && hypePx) {
+      const stAmt = Number(staking.delegated) + Number(staking.undelegated) + Number(staking.totalPendingWithdrawal);
+      stEl.textContent = `${fmtUsd2(stakeVal)} (${fmtNum(stAmt)} HYPE)`;
+      stEl.title = T(
+        `HYPE ${fmtAnyPx(hypePx)} で時価評価。内訳: delegate 中 ${fmtNum(Number(staking.delegated), 4)} / 未 delegate ${fmtNum(Number(staking.undelegated), 4)} / 解除待ち ${fmtNum(Number(staking.totalPendingWithdrawal), 4)} HYPE。総資産に合算されます`,
+        `Valued at HYPE ${fmtAnyPx(hypePx)}. Delegated ${fmtNum(Number(staking.delegated), 4)} / undelegated ${fmtNum(Number(staking.undelegated), 4)} / pending withdrawal ${fmtNum(Number(staking.totalPendingWithdrawal), 4)} HYPE — included in Equity`);
+    } else {
+      stEl.textContent = "–";
+      stEl.title = T("ステーキング情報を取得できず", "Staking info unavailable");
+    }
+  }
   // 取引可能 = Perps 余力 + Spot 可用 USDC。統合残高方式では新規建ての証拠金が Spot USDC からも
   // 自動充当される（hold が増える）ため、Perps 側だけだと実際に使える額より小さく見える
   const perpFree = Math.max(0, perpVal - Number(ch.marginSummary.totalMarginUsed));
@@ -2007,9 +2021,10 @@ function applyLang() {
   $("tf-px").placeholder = FRAMED ? "Price" : "0.0";
   $("tf-sz").placeholder = FRAMED ? "Size" : "0.0";
   // アカウント欄サマリ（1画面時。2画面の共有欄は duo.html のインラインスクリプトが担当）
-  const acctLabels = ["Equity", "Spot Balance", "Available to Trade", "Withdrawable", "Margin Used", "uPnL"];
+  const acctLabels = ["Equity", "Spot Balance", "Staking", "Available to Trade", "Withdrawable", "Margin Used", "uPnL"];
   const acctTitles = [null,
     "Spot account value (excluding USDC held as perps collateral) — included in Equity",
+    null, // ステーキングの tooltip は renderAccount が動的に設定
     "Available for new positions (perps free margin + available spot USDC — unified balance draws from spot automatically)",
     "Estimated withdrawable (available spot USDC + perps withdrawable)",
     null, null];
