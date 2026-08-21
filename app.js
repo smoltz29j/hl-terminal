@@ -1447,8 +1447,8 @@ function signCls(n) { return Number(n) >= 0 ? "up" : "down"; }
 
 // Spot 評価用: トークン名 → USDC 建てペア名（"@N"）。spotMeta は不変なので初回のみ取得してキャッシュ
 let spotPairs = null;
-// アカウント欄の付随データ（mids/ステーキング/vault）の 30 秒キャッシュ — レートリミット対策
-let acctAux = { mids: null, staking: null, vaults: null, ts: 0 };
+// アカウント欄の付随データ（webData2/mids/ステーキング）の 30 秒キャッシュ — レートリミット対策
+let acctAux = { wd: null, mids: null, staking: null, ts: 0 };
 async function loadSpotPairs() {
   const meta = await info({ type: "spotMeta" });
   const tokName = {};
@@ -1461,11 +1461,13 @@ async function loadSpotPairs() {
   return pairs;
 }
 
-// Spot 口座の USDC 建て評価額（取得失敗時は null）。
-// 統合残高方式（2026-07 実測）: Perps の証拠金は Spot USDC を hold して自動充当されるため、
-// USDC は total − hold（公式 webData2 の spot 表示と同じ純額）で数える — total のままだと
-// Perps accountValue と二重計上になる。トークンは USDC 建てペアの mid で時価評価。
-// 注意: Spot の未約定買い注文も hold に入る（その分は過小評価side）— 本ユーザーの用途では稀
+// Spot 口座の USDC 建て評価額（取得失敗時は null）。入力は webData2 の spotState。
+// ⚠ spotClearinghouseState の total−hold は使わない: 統合残高方式で Perps が消費中の Spot USDC は
+// hold と一致しない（2026-08-21 実測: クロス建玉+大きな含み益の状態で hold 27.1k に対し実消費
+// 33.0k — total−hold だと総資産が約 $5.8k 過大になった。2026-07-22 の検証時はたまたま一致）。
+// webData2 の spotState は Perps 消費分をサーバー側で差し引いた純額（公式 UI の spot 表示そのもの）
+// なので、Perps accountValue とそのまま合算できる。トークンは USDC 建てペアの mid で時価評価。
+// 注意: Spot の未約定買い注文は hold に入るため従来どおり控除（過小評価side）— 本ユーザーの用途では稀
 function spotEquity(spot, mids) {
   if (!spot) return null;
   let usdcAvail = 0, tokensVal = 0;
@@ -1478,12 +1480,13 @@ function spotEquity(spot, mids) {
   return { usdcAvail, tokensVal, total: usdcAvail + tokensVal };
 }
 
-async function refreshAccount() {
+// force=true で aux キャッシュ（spot/vault 含む）を即時更新 — 振替・出金の直後用
+async function refreshAccount(force) {
   if (!state.user) return;
   // 右ペインは共有テーブルを描画しない — 発注・キャンセル直後の更新は供給役（左ペイン）に頼む
   if (!ACCT_ON) {
     for (const w of Array.from(window.top.frames)) {
-      if (w !== window) { try { w.refreshAccount?.(); } catch { /* 相手ペイン初期化前 */ } }
+      if (w !== window) { try { w.refreshAccount?.(force); } catch { /* 相手ペイン初期化前 */ } }
     }
     return;
   }
@@ -1491,20 +1494,21 @@ async function refreshAccount() {
   try {
     // 入金は Spot USDC に着金する（2026-07 実測）ため perp だけでは総資産が $0 に見える —
     // spot 残高も取得して合算する。公式ポートフォリオに合わせてステーキング HYPE と vault も加算。
-    // 付随フェッチの失敗は catch(null) で perp 表示を巻き込まない。
-    // mids/ステーキング/vault は変化が遅いので 30 秒キャッシュ（毎回全部叩くと IP レートリミット
-    // 1200weight/分に近づき 429 になる — 2026-07-22 に実際に踏んだ）
-    const auxStale = Date.now() - acctAux.ts > 30000 || acctAux.user !== user;
-    const [ch, orders, spot, mids, staking, vaults] = await Promise.all([
+    // spot+vault は webData2（公式 UI と同じ純額 — spotEquity のコメント参照）から取る。
+    // 付随フェッチの失敗は catch で前回値を使い perp 表示を巻き込まない。
+    // webData2/mids/ステーキング は変化が遅い+重い（webData2 は weight 20）ので 30 秒キャッシュ
+    // （毎回全部叩くと IP レートリミット 1200weight/分に近づき 429 になる — 2026-07-22 に実際に踏んだ）
+    const auxStale = force === true || Date.now() - acctAux.ts > 30000 || acctAux.user !== user;
+    const [ch, orders, wd, mids, staking] = await Promise.all([
       info({ type: "clearinghouseState", user }),
       // openOrders ではなく frontend 版: 修正(batchModify)に必要な tif/reduceOnly/isTrigger が取れる
       info({ type: "frontendOpenOrders", user }),
-      info({ type: "spotClearinghouseState", user }).catch(() => null),
+      auxStale ? info({ type: "webData2", user }).catch(() => acctAux.wd) : acctAux.wd,
       auxStale ? info({ type: "allMids" }).catch(() => acctAux.mids) : acctAux.mids,
       auxStale ? info({ type: "delegatorSummary", user }).catch(() => acctAux.staking) : acctAux.staking,
-      auxStale ? info({ type: "userVaultEquities", user }).catch(() => acctAux.vaults) : acctAux.vaults,
     ]);
-    if (auxStale) acctAux = { mids, staking, vaults, ts: Date.now(), user };
+    if (auxStale) acctAux = { wd, mids, staking, ts: Date.now(), user };
+    const spot = wd?.spotState ?? null;
     if (spot && !spotPairs) {
       try { spotPairs = await loadSpotPairs(); } catch { /* トークン評価は次周期に再試行 */ }
     }
@@ -1517,7 +1521,7 @@ async function refreshAccount() {
     const stakeVal = staking && mids?.HYPE
       ? (Number(staking.delegated) + Number(staking.undelegated) + Number(staking.totalPendingWithdrawal)) * Number(mids.HYPE)
       : 0;
-    const vaultVal = Array.isArray(vaults) ? vaults.reduce((s, v) => s + Number(v.equity), 0) : 0;
+    const vaultVal = Number(wd?.totalVaultEquity) || 0;
     renderAccount(ch, orders, spotEq, stakeVal, vaultVal);
   } catch (e) {
     console.error("account refresh failed:", e);

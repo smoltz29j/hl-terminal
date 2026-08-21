@@ -516,7 +516,7 @@ async function withdrawFunds() {
     tradeStatus(T("出金を送信中…", "Submitting withdrawal…"));
     await exchangePost(action, HLSign.splitSig(sigHex), time); // user-signed は nonce = time
     tradeStatus(T(`出金リクエストを送信しました（${amount} USDC → Arbitrum、3〜7分で着金）`, `Withdrawal submitted (${amount} USDC → Arbitrum, arrives in 3–7 min)`), "ok");
-    refreshAccount();
+    refreshAccount(true); // spot/vault は 30 秒キャッシュのため強制更新
   } catch (e) {
     console.error("withdraw:", e);
     tradeStatus(errMsg(e), "err");
@@ -588,7 +588,7 @@ async function transferFunds() {
     await exchangePost(action, HLSign.splitSig(sigHex), nonce); // user-signed は nonce = action.nonce
     tradeStatus(T(`振替しました（${amount} USDC ${toPerp ? "Spot → Perps" : "Perps → Spot"}）`,
       `Transferred ${amount} USDC ${toPerp ? "spot → perps" : "perps → spot"}`), "ok");
-    refreshAccount();
+    refreshAccount(true); // spot/vault は 30 秒キャッシュのため強制更新
   } catch (e) {
     console.error("transfer:", e);
     tradeStatus(errMsg(e), "err");
