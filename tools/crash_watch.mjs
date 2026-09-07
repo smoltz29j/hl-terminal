@@ -2,8 +2,12 @@
 // 状態変化時だけデスクトップ通知 + ログ。最大の目的 = 急落の早期発見
 //（ユーザー方針 2026-07-26: 「見つけたらすぐ指摘、騙しと判断したらそれも指摘」）。
 //
-//   node tools/crash_watch.mjs          # 判定 → 状態ファイル更新・変化時に notify-send
+//   node tools/crash_watch.mjs          # 判定 → 状態ファイル更新・ログのみ（デスクトップ通知なし）
+//   node tools/crash_watch.mjs --notify # 従来動作: 状態変化時に notify-send も出す
 //   node tools/crash_watch.mjs --peek   # 判定だけ（状態ファイルを書かない。Claude セッション用）
+//
+// 2026-08-29 ユーザー指示「デスクトップに警報等の window を表示させない」により
+// notify-send はデフォルト無効（--notify でのみ有効）。判定・ログ・状態更新は継続。
 //
 // TL ロジックは app.js から実行時に抜き出して評価する（二重実装を避け、
 // app.js 側のチューニングに自動追従する）。判定は日足・公式 mainnet API。
@@ -16,6 +20,7 @@ const DIR = dirname(fileURLToPath(import.meta.url));
 const APP_JS = join(DIR, "..", "app.js");
 const STATE_FILE = join(DIR, "crash_watch_state.json");
 const PEEK = process.argv.includes("--peek");
+const NOTIFY = process.argv.includes("--notify"); // デスクトップ通知はオプトイン（2026-08-29）
 
 // ---- app.js から auto trend channels 一式を抽出 ----
 const app = readFileSync(APP_JS, "utf8");
@@ -230,7 +235,7 @@ console.log(JSON.stringify(verdict));
 
 if (!PEEK) {
   writeFileSync(STATE_FILE, JSON.stringify({ ...verdict, changed: undefined }));
-  if (changed || fakeout) {
+  if (NOTIFY && (changed || fakeout)) {
     const head = fakeout ? "HL: 破断→回復 — 騙しだった可能性"
       : level >= 3 ? "🚨 HL 急落警報 Lv3" : level >= 2 ? "⚠ HL 急落警戒 Lv2" : "HL 監視状態変化";
     try {
