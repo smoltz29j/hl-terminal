@@ -19,7 +19,7 @@ if (window.self !== window.top) document.documentElement.classList.add("framed")
 </script>
 <!-- ?v= はキャッシュバスター。style.css / app.js / hl-sign.js / trade.js を変更したら
      ここの4箇所 + duo.html の style.css?v= も合わせて数字を上げる -->
-<link rel="stylesheet" href="style.css?v=43">
+<link rel="stylesheet" href="style.css?v=44">
 <script src="https://unpkg.com/lightweight-charts@4.2.3/dist/lightweight-charts.standalone.production.js"></script>
 <script src="https://unpkg.com/ethers@6.15.0/dist/ethers.umd.min.js"></script>
 <script src="metamask-sdk.bundle.js"></script>
@@ -50,7 +50,7 @@ if (window.self !== window.top) document.documentElement.classList.add("framed")
     <button data-iv="1M">1M</button>
   </nav>
   <nav id="indicators">
-    <button id="ind-ma" title="移動平均線 (20/50)">MA</button>
+    <button id="ind-ma" title="移動平均線 (20/50/200)">MA</button>
     <button id="ind-bb" title="ボリンジャーバンド (20, 2σ)">BB</button>
     <button id="ind-tl" title="トレンドチャネル自動描画">TL</button>
   </nav>
@@ -211,8 +211,8 @@ if (window.self !== window.top) document.documentElement.classList.add("framed")
   </div>
 </div>
 
-<script src="app.js?v=43"></script>
-<script src="hl-sign.js?v=43"></script>
-<script src="trade.js?v=43"></script>
+<script src="app.js?v=44"></script>
+<script src="hl-sign.js?v=44"></script>
+<script src="trade.js?v=44"></script>
 </body>
 </html>

@@ -219,6 +219,11 @@ const IND_CFG = (() => {
 const MA_DEFS = [
   { period: 20, color: "#c98500" },
   { period: 50, color: "#3987e5" },
+  // MA200 は意図的な無彩色（TradingView 等の慣例）。validator では chroma floor /
+  // lightness band が FAIL するが、CVD 分離・通常視の分離・コントラストは既存全色に対し
+  // PASS（2026-10-08 検証: 相手の最悪ペアは既存色同士）— 色相を持たないので CVD でも
+  // 他系列と混同しない注釈線として採用
+  { period: 200, color: "#d9d9d9" },
 ];
 const BB_DEF = { period: 20, mult: 2, color: "#d55181" };
 
@@ -2002,7 +2007,7 @@ function applyLang() {
   cf.placeholder = "Search";
   cf.title = "Filter symbols";
   ttl("#coin-select", "Symbol");
-  ttl("#ind-ma", "Moving averages (20/50)");
+  ttl("#ind-ma", "Moving averages (20/50/200)");
   ttl("#ind-bb", "Bollinger Bands (20, 2σ)");
   ttl("#ind-tl", "Auto trend channels");
   ttl("#settings-btn", "API endpoint settings");
