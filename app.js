@@ -68,6 +68,11 @@ const state = {
 // ---------- 2画面モード（duo.html が index.html?pane=1/2 を iframe で並べる） ----------
 const PANE = new URLSearchParams(location.search).get("pane");
 const FRAMED = window.self !== window.top;
+// ペーパートレード（仮想発注）モード。localStorage hlt-paper="1"。発注系は trade.js が paper.js へ
+// 分岐し、アカウント欄は仮想口座を描画する（実 /exchange へは一切送らない）。切替は reload
+const PAPER = (() => {
+  try { return localStorage.getItem("hlt-paper") === "1"; } catch { return false; }
+})();
 
 const $ = (id) => document.getElementById(id);
 
@@ -1241,7 +1246,7 @@ function renderStats(ctx) {
   $("st-oi").textContent = fmtUsd(Number(ctx.openInterest) * mark);
   $("st-vol").textContent = fmtUsd(ctx.dayNtlVlm);
   const warn = state.alertLevel >= 3 ? "🚨 " : state.alertLevel === 2 ? "⚠ " : "";
-  document.title = `${warn}${fmtPx(mark)} ${state.coin} · HL Terminal`;
+  document.title = `${warn}${PAPER ? "[Paper] " : ""}${fmtPx(mark)} ${state.coin} · HL Terminal`;
 }
 
 // ---------- サブティッカー（HIP-3 xyz DEX 銘柄の常時表示） ----------
@@ -1487,7 +1492,7 @@ function spotEquity(spot, mids) {
 
 // force=true で aux キャッシュ（spot/vault 含む）を即時更新 — 振替・出金の直後用
 async function refreshAccount(force) {
-  if (!state.user) return;
+  if (!PAPER && !state.user) return;
   // 右ペインは共有テーブルを描画しない — 発注・キャンセル直後の更新は供給役（左ペイン）に頼む
   if (!ACCT_ON) {
     for (const w of Array.from(window.top.frames)) {
@@ -1495,6 +1500,8 @@ async function refreshAccount(force) {
     }
     return;
   }
+  // ペーパーモードは仮想口座（paper.js）。ウォレット接続の有無に関わらずこちらを描画する
+  if (PAPER) return paperRefresh(force);
   const user = state.user;
   try {
     // 入金は Spot USDC に着金する（2026-07 実測）ため perp だけでは総資産が $0 に見える —
@@ -1637,7 +1644,7 @@ function renderAccount(ch, orders, spotEq, stakeVal, vaultVal, staking, hypePx) 
 }
 
 function setUser(addr, source, fromSync = false) {
-  clearInterval(state.acctTimer);
+  if (!PAPER) clearInterval(state.acctTimer); // paper は paperStart が張った仮想口座のティックを維持
   state.user = addr;
   state.userSource = addr ? source ?? state.userSource : null;
   // 2画面時はウォレット接続を共有: どちらかのペインで接続/切断したらもう片方も追従する
@@ -1664,8 +1671,9 @@ function setUser(addr, source, fromSync = false) {
       btn.title = "";
     }
   }
-  // アカウント欄の表示とポーリングは供給役ペインのみ（2画面時の共有 footer は左ペインが描画）
-  if (ACCT_ON) {
+  // アカウント欄の表示とポーリングは供給役ペインのみ（2画面時の共有 footer は左ペインが描画）。
+  // paper モードでは接続状態に依らず仮想口座を常時表示するので触らない
+  if (ACCT_ON && !PAPER) {
     if (addr) {
       acct("account").hidden = false;
       refreshAccount();
@@ -1926,8 +1934,25 @@ for (const btn of document.querySelectorAll("#intervals button")) {
 // 2画面時: 片方のペインで API 接続先を変更・保存したら、もう片方も追従して再読込する
 // （storage イベントは他ウィンドウの変更でのみ発火するので、自分は二重 reload しない）
 window.addEventListener("storage", (e) => {
-  if (e.key === "hlt-api" || e.key === "hlt-lang") location.reload();
+  if (e.key === "hlt-api" || e.key === "hlt-lang" || e.key === "hlt-paper") location.reload();
+  // 右ペインの仮想発注で口座が書き換わったら供給役ペインが即時再描画（5秒ティックを待たない）
+  if (PAPER && ACCT_ON && e.key === PAPER_KEY) paperRender(paperLoad());
 });
+
+// ---------- ペーパートレード切替ボタン（最上段。2画面時は duo.html 側のボタンが同じ処理） ----------
+{
+  const btn = $("paper-btn");
+  if (btn) {
+    btn.classList.toggle("active", PAPER);
+    btn.title = PAPER
+      ? T("ペーパートレード中（クリックで実発注モードへ戻す）", "Paper trading on (click to return to live trading)")
+      : T("ペーパートレード（仮想発注）に切替", "Switch to paper trading (simulated orders)");
+    btn.addEventListener("click", () => {
+      safeSet("hlt-paper", PAPER ? "0" : "1");
+      location.reload();
+    });
+  }
+}
 
 // ---------- API settings modal ----------
 
@@ -1968,6 +1993,9 @@ function renderNetBadge() {
     badge.className = NET.isMainnet ? "net-custom" : "net-testnet";
     badge.title = NET.http;
   }
+  const pb = $("paper-badge");
+  pb.hidden = !PAPER;
+  pb.title = T("ペーパートレード中 — 注文は仮想口座で約定し、取引所へは送信されません", "Paper trading — orders fill in a virtual account and are never sent to the exchange");
 }
 
 // puppeteer 検証用の内部ハンドル（トップレベル const/let は window に乗らず外から見えないため。
@@ -1981,6 +2009,7 @@ window.__hlt = {
   set mmProvider(p) { mmProvider = p; }, // E2E でフェイクプロバイダを差し込む用
   get mmsdk() { return mmsdk; },
   set mmsdk(s) { mmsdk = s; }, // E2E でフェイク SDK を差し込む用（restoreWallet の検証）
+  get paper() { return PAPER ? paperLoad() : null; },
 };
 
 // ---------- 表示言語の適用と切替ボタン ----------
@@ -2043,6 +2072,10 @@ function applyLang() {
   ttl("#ac-deposit", "Send USDC on Arbitrum to the bridge (min 5 USDC)");
   t("#ac-withdraw-btn", "Withdraw");
   ttl("#ac-withdraw-btn", "Withdraw USDC to Arbitrum (fee 1 USDC)");
+  // ペーパー口座（リセットボタン・約定履歴。2画面の共有欄は duo.html 側）
+  t("#paper-reset", "Reset");
+  ttl("#paper-reset", "Reset the paper account (clears positions, orders and fills)");
+  t("#paper-fills-sec h2", "Fills (Paper)");
   // 設定モーダル
   t("#settings-box h3", "API endpoint");
   const names = [
@@ -2091,6 +2124,7 @@ function applyLang() {
   loadTicker(); // 初期値。以後は WS activeAssetCtx で更新
   connect();
   demandConnect();
+  if (PAPER) paperStart(); // 仮想口座の表示とティック（銘柄メタ取得後 — maxLev/szDecimals を使う）
   setInterval(applyTlWatch, 30000); // 実需フローの追記を定期更新
   const qUser = new URLSearchParams(location.search).get("user");
   if (qUser && /^0x[0-9a-fA-F]{40}$/.test(qUser)) setUser(qUser.toLowerCase(), "watch"); // クエリ指定は保存しない（テスト用の一時表示）

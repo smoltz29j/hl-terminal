@@ -34,6 +34,8 @@ function dropAgent() {
 }
 
 function tradeReady() {
+  // paper モードは接続不要（仮想口座への発注。各操作は PAPER 分岐で paper.js へ流れ /exchange は叩かない）
+  if (PAPER) return true;
   return !!(trade.agent && state.user && state.userSource === "mm");
 }
 
@@ -155,6 +157,17 @@ async function submitOrder() {
 
     const label = T(`${coin} ${isBuy ? "買い" : "売り"} ${sz} @ ${trade.type === "market" ? "成行" : px}`,
       `${coin} ${isBuy ? "Buy" : "Sell"} ${sz} @ ${trade.type === "market" ? "market" : px}`);
+
+    if (PAPER) {
+      trade.busy = true;
+      $("tf-submit").disabled = true;
+      const r = await paperPlace({ coin, isBuy, sz, px, type: trade.type, ro: $("tf-ro").checked });
+      if (r.filled) tradeStatus(T(`[Paper] 約定: ${label} → ${r.filled.sz} @ ${fmtAnyPx(r.filled.px)}`, `[Paper] Filled: ${label} → ${r.filled.sz} @ ${fmtAnyPx(r.filled.px)}`), "ok");
+      else tradeStatus(T(`[Paper] 板に登録（oid ${r.resting.oid}）: ${label}`, `[Paper] Resting (oid ${r.resting.oid}): ${label}`), "ok");
+      refreshAccount();
+      return;
+    }
+
     if (NET.isMainnet && !confirm(T(`【Mainnet — 実資金】\n${label}\n送信しますか？`, `[Mainnet — real funds]\n${label}\nSend?`))) return;
 
     trade.busy = true;
@@ -192,6 +205,12 @@ async function cancelOrder(coin, oid) {
   if (trade.busy || !tradeReady()) return;
   trade.busy = true; // テーブルのボタンは再描画まで生きている — 連打の二重送信を防ぐ
   try {
+    if (PAPER) {
+      paperCancel(oid);
+      tradeStatus(T(`[Paper] キャンセルしました（oid ${oid}）`, `[Paper] Cancelled (oid ${oid})`), "ok");
+      refreshAccount();
+      return;
+    }
     const action = { type: "cancel", cancels: [{ a: state.assetIds[coin], o: oid }] };
     const nonce = Date.now();
     const sig = await HLSign.signL1Action(trade.agent, action, null, nonce, NET.isMainnet);
@@ -226,6 +245,14 @@ async function modifyOrder(oid) {
     const px = roundPx(parsePositive(pxIn, T("価格", "price")), szd);
     const sz = Number(parsePositive(szIn, T("数量", "size")).toFixed(szd));
     if (sz <= 0) throw new Error(T(`数量が最小単位（${Math.pow(10, -szd)}）未満です`, `Size is below the minimum unit (${Math.pow(10, -szd)})`));
+
+    if (PAPER) {
+      const r = await paperModify(oid, px, sz);
+      if (r.filled) tradeStatus(T(`[Paper] 修正後に即時約定: ${r.filled.sz} @ ${fmtAnyPx(r.filled.px)}`, `[Paper] Filled on modify: ${r.filled.sz} @ ${fmtAnyPx(r.filled.px)}`), "ok");
+      else tradeStatus(T(`[Paper] 修正しました（oid ${oid} → ${r.resting.oid}）`, `[Paper] Modified (oid ${oid} → ${r.resting.oid})`), "ok");
+      refreshAccount();
+      return;
+    }
 
     if (NET.isMainnet && !confirm(T(`【Mainnet — 実資金】\n${o.coin} 注文 ${oid} を修正:\n${o.limitPx} → ${px} / ${o.sz} → ${sz}\n送信しますか？`, `[Mainnet — real funds]\nModify ${o.coin} order ${oid}:\n${o.limitPx} → ${px} / ${o.sz} → ${sz}\nSend?`))) return;
 
@@ -297,6 +324,14 @@ async function closePosition(coin) {
       kind = T(`指値 ${px}`, `limit ${px}`);
     }
 
+    if (PAPER) {
+      const r = await paperPlace({ coin, isBuy, sz, px, type: tif === "Ioc" ? "market" : "limit", ro: true });
+      if (r.filled) tradeStatus(T(`[Paper] クローズ約定: ${coin} ${r.filled.sz} @ ${fmtAnyPx(r.filled.px)}`, `[Paper] Close filled: ${coin} ${r.filled.sz} @ ${fmtAnyPx(r.filled.px)}`), "ok");
+      else tradeStatus(T(`[Paper] クローズ指値を板に登録（oid ${r.resting.oid}）`, `[Paper] Close limit resting (oid ${r.resting.oid})`), "ok");
+      refreshAccount();
+      return;
+    }
+
     if (!confirm(T(`${NET.isMainnet ? "【Mainnet — 実資金】\n" : ""}${coin} ポジション ${p.szi} のうち ${sz} を${kind}でクローズしますか？`,
       `${NET.isMainnet ? "[Mainnet — real funds]\n" : ""}Close ${sz} of the ${coin} position (${p.szi}) at ${kind}?`))) return;
 
@@ -339,6 +374,13 @@ async function refreshLeverage() {
   if (!tradeReady() || asset == null) { row.hidden = true; return; }
   row.hidden = false;
   $("tf-lev-max").textContent = T(`x（最大 ${state.maxLev[coin] ?? "?"}）`, `x (max ${state.maxLev[coin] ?? "?"})`);
+  if (PAPER) {
+    // 仮想口座はクロス固定 — マージンモードの切替は出さない（style.css に #tf-margin[hidden] あり）
+    $("tf-margin").hidden = true;
+    $("tf-lev").value = String(paperLev(paperLoad(), coin));
+    setMarginMode(true);
+    return;
+  }
   try {
     const d = await info({ type: "activeAssetData", user: state.user, coin });
     if (state.coin !== coin) return; // 取得中に銘柄が切り替わったら破棄
@@ -366,6 +408,13 @@ async function setLeverage() {
     const lev = Math.round(parsePositive($("tf-lev").value, T("レバレッジ", "leverage")));
     if (lev < 1 || lev > max) throw new Error(T(`レバレッジは 1〜${max} の整数で指定してください`, `Leverage must be an integer between 1 and ${max}`));
     const modeTxt = trade.levCross ? "Cross" : "Isolated";
+    if (PAPER) {
+      paperSetLeverage(coin, lev);
+      tradeStatus(T(`[Paper] ${coin} のレバレッジを ${lev}x に変更しました`, `[Paper] ${coin} leverage set to ${lev}x`), "ok");
+      refreshAccount();
+      refreshLeverage();
+      return;
+    }
     if (NET.isMainnet && !confirm(T(`【Mainnet】${coin} のレバレッジを ${lev}x（${modeTxt}）に変更します。\nポジションがある場合は必要証拠金・清算価格が変わります。よろしいですか？`, `[Mainnet] Change ${coin} leverage to ${lev}x (${modeTxt}).\nMargin requirement and liquidation price of existing positions will change. OK?`))) return;
 
     trade.busy = true;
@@ -672,7 +721,9 @@ function tradeStatus(msg, cls) {
 function renderTradePane() {
   const form = $("trade-form");
   const gate = $("trade-gate");
-  $("trade-net").textContent = NET.isMainnet ? "Mainnet" : "Testnet";
+  const tag = $("trade-net");
+  tag.textContent = PAPER ? "Paper" : NET.isMainnet ? "Mainnet" : "Testnet";
+  tag.classList.toggle("paper", PAPER);
   $("tf-coin").textContent = state.coin;
 
   if (tradeReady()) {

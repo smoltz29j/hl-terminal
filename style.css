@@ -759,3 +759,59 @@ html.framed #tg-btn { padding: 6px 0; }
   #acct-tables table { min-width: 540px; }
   #account th, #account td { white-space: nowrap; }
 }
+
+/* ---------- ペーパートレード（仮想発注）モード ---------- */
+/* 最上段の切替ボタン: 見た目は split/lang と同系、ON 時は琥珀でハイライト */
+#paper-btn {
+  background: none;
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  color: var(--muted);
+  padding: 5px 9px;
+  cursor: pointer;
+  font: inherit;
+  white-space: nowrap;
+}
+#paper-btn:hover { border-color: var(--muted); color: var(--ink-2); }
+#paper-btn.active { color: #c98500; border-color: #c98500; font-weight: 600; }
+/* topbar のバッジ（net-badge と同形。両方同時に出ることがある） */
+#paper-badge {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  padding: 2px 7px;
+  border-radius: 5px;
+  color: #c98500;
+  border: 1px solid #c98500;
+}
+#paper-badge[hidden] { display: none; }
+/* Trade 欄の見出しタグ */
+#trade-net.paper { color: #c98500; border-color: #c98500; }
+/* 仮想口座はクロス固定 — マージンモードの seg を隠す（.seg は display:flex なので hidden に明示が要る） */
+#tf-margin[hidden] { display: none; }
+/* アカウント欄: Spot/ステーキング/引き出し可能は仮想口座に無いので隠す */
+#account.paper .stat:has(#ac-spot),
+#account.paper .stat:has(#ac-stake),
+#account.paper .stat:has(#ac-withdraw) { display: none; }
+#acct-paper { margin-left: auto; display: flex; gap: 10px; align-items: center; }
+#acct-paper[hidden] { display: none; }
+#acct-paper .paper-tag { font-size: 10px; font-weight: 700; letter-spacing: 0.5px; color: #c98500; border: 1px solid #c98500; border-radius: 5px; padding: 2px 7px; }
+#paper-pnl { font-size: 12px; font-variant-numeric: tabular-nums; }
+#paper-pnl.up { color: var(--buy); }
+#paper-pnl.down { color: var(--sell); }
+#acct-paper button {
+  background: none;
+  border: 1px solid var(--hairline);
+  border-radius: 4px;
+  color: var(--muted);
+  font-size: 12px;
+  padding: 4px 10px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+#acct-paper button:hover { color: var(--ink); border-color: var(--muted); }
+/* 約定履歴を3列目に（paper 時のみ出る。モバイルは上の @media の 1 列を維持） */
+@media (min-width: 901px) {
+  #account.paper #acct-tables { grid-template-columns: 3fr 2fr 3fr; }
+}
+#paper-fills td:first-child { white-space: nowrap; }
