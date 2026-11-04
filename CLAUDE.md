@@ -66,10 +66,20 @@ elwhite (192.168.101.201) 上で動かし、LAN のブラウザから **`https:/
 
 買い `#0ca30c` / 売り `#e66767`（ダーク背景 `#1a1a19` に対し CVD 検証済み・deutan ΔE 23.4）。変更する場合は dataviz skill の validate_palette.js で再検証する。
 
+## クラウド版（takerflow.com:8010、ペーパートレード専用、2026-11-04）
+
+**公開 URL: `https://takerflow.com:8010/`**（Vultr VPS。Caddy が Let's Encrypt で TLS 終端し 127.0.0.1:18010 の `cloud/server.py` へ中継）。LAN 版と同じ HTML/JS を配信するが、サーバーが生成する `cloud.js`（`window.HLT_CLOUD = {paperOnly, api, demand}`）で**クラウドモード**になる: paper 固定・ウォレット機能なし（Connect/Paper ボタン非表示、MetaMask SDK は空スタブ配信、`restoreWallet` 不実行）・最上段にログアウト・**口座 JSON はサーバーに保存**。LAN 版では `cloud.js` は静的ファイル（`HLT_CLOUD = null`）で従来どおり。判定は app.js の `CLOUD` 定数、`html.cloud` クラス（index.html/duo.html 冒頭で付与、CSS 用）。
+
+- **サーバー `cloud/server.py`**（aiohttp、uv インライン依存、Python 3.11+）: **ユーザー名+パスワード認証**（`data/users.json` に scrypt ハッシュ、Cookie `hlt_sess` = HMAC 署名トークン〔期限.ユーザー名.nonce〕30 日・HttpOnly/Secure/Lax、同一 IP 5 回失敗で 10 分ロック。ユーザー名は英数字 1〜32 文字）/ ホワイトリスト静的配信（index/duo/style/app/hl-sign/paper/trade のみ。certs・tools・.git は 404）/ `/api/paper/<mainnet|testnet>` GET・PUT（**ログイン中ユーザーの** `data/users/<user>/paper-<net>.json` — 取引履歴 fills も口座 JSON 内。**rev による楽観ロック** — 古い rev の PUT は 409 で現在値を返す。直前版を `.prev.json` に 1 世代保持）/ `/healthz`（無認証: 配信中 JS の md5 とユーザー数 — deploy の検証用）/ `/logout`。`cloud.js` にはログイン中ユーザー名も入り、ログアウトボタンに「ログアウト (name)」と表示。ユーザー管理は CLI（`--set-password --user <name>` = 追加/変更、`--list-users`、`--delete-user`）。現在は 1 ユーザー（ランダム名、2026-11-04 ユーザー指示「user/password で認証、ユーザーごとに取引履歴を保存、今は 1 ユーザーでよい」「ユーザー名は smoltz でなくランダムで」）。
+- **フロント同期（paper.js の paperCloud\*）**: localStorage はキャッシュ、サーバーが正本。`paperLoad()` は同期関数のまま（呼び出し元を変えない）。`paperSave()` → dirty を立てて PUT（直列化）、5 秒ティックは If-None-Match 付き GET（304 なら無通信）で別端末の更新を取り込む。409 なら**サーバー版を採用してローカルの変更を捨て**赤字通知。起動時 `paperCloudLoad()` がサーバーの口座をキャッシュへ（空なら新規口座を登録）、完了まで `paper.cloudReady=false` で発注ゲート「クラウドの口座を読込中…」（`tradeReady()`）— **初期ロード前に空口座を PUT してサーバー側を潰さないための防御**。同一ブラウザの 2 ペインは localStorage と rev（`hlt-paper:acct:<net>:rev`）を共有するので衝突しない。実需フィードは同じ VPS の `wss://takerflow.com:8765/ws`（cloud.js の demand）。
+- **デプロイ**: `./deploy_takerflow.sh`（rsync ホワイトリスト → `vultr:apps/hl-paper/`、unit 更新・restart、healthz の md5 照合）。VPS 側: systemd ユーザーユニット `hl-paper`（`cloud/hl-paper.service`、`HLT_DATA=~/apps/hl-paper/data`）、Caddyfile に `https://takerflow.com:8010` ブロック追加済み（バックアップ `Caddyfile.bak.20261104`）。**`takerflow-sync.timer` の自動同期には入れていない**（手動デプロイのみ）。MetaMask SDK バンドル・certs・tools は送らない。
+- **ログイン情報**: elwhite の `~/claude/hyperliquid/hl-paper-password.txt`（600、git 外。ユーザー名とパスワード）。変更/追加は `ssh -t vultr "cd apps/hl-paper && HLT_DATA=/home/smoltz/apps/hl-paper/data ~/.local/bin/uv run cloud/server.py --set-password --user <name>"`（**HLT_DATA を付け忘れると `cloud/data/` に書かれて unit が読まない** — 初回に実際に踏んだ）。パスワード変更でセッションは失効しない（失効させるには `data/secret` を削除して restart）。
+- **検証済み（2026-11-04）**: ローカル E2E（puppeteer）= ログイン/401/403 相当/409/304/ロックアウト、2 画面での成行+指値、localStorage 消去後の再読込でサーバーから復元、サーバー側 rev 直接変更の取り込み、stale rev 保存の 409 → 採用通知、ログアウト、スマホ幅 1 画面。本番 = SSH トンネル + `--host-resolver-rules` で実 LE 証明書のまま同じ流れを確認（口座 rev 3 がサーバーに保存）。ufw 8010/tcp はユーザーが開放済み（2026-11-04、公開 URL で 200 確認）。ユーザー別化（v47）後の E2E も同じ項目を再実行して全パス（2 ユーザーの口座分離は curl で確認）。
+
 ## 未検証・今後
 
 - スマホ MetaMask（QR セッション）経由の `eth_signTypedData_v4` 実機承認は未検証（署名データ形式は SDK 互換を確認済み）。
 - testnet での実約定テストにはユーザーの testnet 入金が必要（faucet: app.hyperliquid-testnet.xyz、mainnet 残高のあるアドレスが条件）。
 - TP/SL（trigger 注文）・cloid は未実装。レバレッジ変更（`updateLeverage`、Cross/Isolated 切替付き）は実装済み — 現在値は info `activeAssetData`、action のキー順は type,asset,isCross,leverage（署名バイト互換は復元アドレス法で検証済み 2026-07-14）。
 - builder DEX 銘柄（xyz: 等）の発注・レバレッジ変更は無効化中だが、asset id 採番は検証済み（2026-07-28、上記セレクタ項参照）。有効化は state.assetIds 登録のみ・実約定の小ロット確認を推奨。
-- **JS/CSS を変更したら index.html の `?v=` 5箇所 + duo.html の style.css?v= を上げること**（キャッシュバスター。iPhone Safari が古い JS を使い回す実害があった）。
+- **JS/CSS を変更したら index.html の `?v=` 6箇所 + duo.html の style.css?v= / cloud.js?v= を上げること**（キャッシュバスター。iPhone Safari が古い JS を使い回す実害があった）。

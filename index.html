@@ -17,9 +17,12 @@ if (window.self === window.top
 // 2画面のペイン内は幅に依らずデスクトップ型レイアウト（style.css の html.framed ルール）
 if (window.self !== window.top) document.documentElement.classList.add("framed");
 </script>
-<!-- ?v= はキャッシュバスター。style.css / app.js / hl-sign.js / paper.js / trade.js を変更したら
-     ここの5箇所 + duo.html の style.css?v= も合わせて数字を上げる -->
-<link rel="stylesheet" href="style.css?v=45">
+<!-- ?v= はキャッシュバスター。style.css / cloud.js / app.js / hl-sign.js / paper.js / trade.js を変更したら
+     ここの6箇所 + duo.html の style.css?v= / cloud.js?v= も合わせて数字を上げる -->
+<link rel="stylesheet" href="style.css?v=47">
+<!-- cloud.js: クラウド版（takerflow、paper 専用）の設定。LAN 版では HLT_CLOUD=null の静的ファイル -->
+<script src="cloud.js?v=47"></script>
+<script>if (window.HLT_CLOUD) document.documentElement.classList.add("cloud");</script>
 <script src="https://unpkg.com/lightweight-charts@4.2.3/dist/lightweight-charts.standalone.production.js"></script>
 <script src="https://unpkg.com/ethers@6.15.0/dist/ethers.umd.min.js"></script>
 <script src="metamask-sdk.bundle.js"></script>
@@ -33,6 +36,8 @@ if (window.self !== window.top) document.documentElement.classList.add("framed")
   <button id="settings-btn" title="API 接続先の設定">⚙</button>
   <button id="paper-btn">Paper</button>
   <button id="lang-btn" title="表示言語の切替"></button>
+  <!-- クラウド版のみ（html.cloud）: Connect/Paper の代わりにログアウト。処理は app.js -->
+  <button id="logout-btn" hidden></button>
 </header>
 <!-- 2段目: サブティッカー（スマホではマーキー、PC は固定表示） -->
 <div id="ticker" hidden></div>
@@ -227,9 +232,9 @@ if (window.self !== window.top) document.documentElement.classList.add("framed")
   </div>
 </div>
 
-<script src="app.js?v=45"></script>
-<script src="hl-sign.js?v=45"></script>
-<script src="paper.js?v=45"></script>
-<script src="trade.js?v=45"></script>
+<script src="app.js?v=47"></script>
+<script src="hl-sign.js?v=47"></script>
+<script src="paper.js?v=47"></script>
+<script src="trade.js?v=47"></script>
 </body>
 </html>

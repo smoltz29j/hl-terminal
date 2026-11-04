@@ -1,0 +1,18 @@
+[Unit]
+Description=HL Terminal cloud (paper-trading only, behind Caddy https://takerflow.com:8010 -> 127.0.0.1:18010)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/smoltz/apps/hl-paper
+ExecStart=/home/smoltz/.local/bin/uv run cloud/server.py
+Environment=HOST=127.0.0.1
+Environment=PORT=18010
+Environment=HLT_DATA=/home/smoltz/apps/hl-paper/data
+Environment=PYTHONUNBUFFERED=1
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

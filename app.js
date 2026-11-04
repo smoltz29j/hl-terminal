@@ -70,7 +70,12 @@ const PANE = new URLSearchParams(location.search).get("pane");
 const FRAMED = window.self !== window.top;
 // ペーパートレード（仮想発注）モード。localStorage hlt-paper="1"。発注系は trade.js が paper.js へ
 // 分岐し、アカウント欄は仮想口座を描画する（実 /exchange へは一切送らない）。切替は reload
+// クラウド版（takerflow.com、cloud/server.py）: cloud.js が window.HLT_CLOUD を立てる。
+// paper 固定・ウォレット接続なし・口座 JSON はサーバー API に保存（paper.js の paperCloud*）。
+// LAN 版（serve.py）では cloud.js が null を返し CLOUD=null = 従来どおり
+const CLOUD = window.HLT_CLOUD || null;
 const PAPER = (() => {
+  if (CLOUD?.paperOnly) return true;
   try { return localStorage.getItem("hlt-paper") === "1"; } catch { return false; }
 })();
 
@@ -860,8 +865,11 @@ const DEMAND_URL = (() => {
   try {
     const u = localStorage.getItem("hlt-demand");
     if (u === "off") return null;
+    if (u) return u;
+    // クラウド版は同じ VPS の realtime_demand（Caddy 経由 wss）。URL はサーバー側 cloud.js が指定
+    if (CLOUD) return CLOUD.demand || null;
     // https ページからは平文 ws:// が mixed content でブロックされるため wss リスナー（8766）を使う
-    return u || (location.protocol === "https:"
+    return (location.protocol === "https:"
       ? `wss://${location.hostname}:8766/ws`
       : `ws://${location.hostname}:8765/ws`);
   } catch { return null; }
@@ -1939,10 +1947,24 @@ window.addEventListener("storage", (e) => {
   if (PAPER && ACCT_ON && e.key === PAPER_KEY) paperRender(paperLoad());
 });
 
+// ---------- クラウド版: Connect / Paper を隠してログアウトボタン（duo.html のシェルも同じ処理） ----------
+if (CLOUD) {
+  $("wallet-btn").hidden = true;
+  $("paper-btn").hidden = true;
+  const lo = $("logout-btn");
+  lo.hidden = false;
+  lo.textContent = CLOUD.user ? T(`ログアウト (${CLOUD.user})`, `Logout (${CLOUD.user})`) : T("ログアウト", "Logout");
+  lo.title = CLOUD.user ? T(`${CLOUD.user} でログイン中 — クリックでログアウト`, `Signed in as ${CLOUD.user} — click to sign out`) : T("クラウド版からログアウト", "Sign out");
+  lo.addEventListener("click", async () => {
+    try { await fetch("/logout", { method: "POST" }); } catch { /* 失敗してもログインページへ */ }
+    window.top.location.href = "/login";
+  });
+}
+
 // ---------- ペーパートレード切替ボタン（最上段。2画面時は duo.html 側のボタンが同じ処理） ----------
 {
   const btn = $("paper-btn");
-  if (btn) {
+  if (btn && !CLOUD) {
     btn.classList.toggle("active", PAPER);
     btn.title = PAPER
       ? T("ペーパートレード中（クリックで実発注モードへ戻す）", "Paper trading on (click to return to live trading)")
@@ -2127,6 +2149,7 @@ function applyLang() {
   if (PAPER) paperStart(); // 仮想口座の表示とティック（銘柄メタ取得後 — maxLev/szDecimals を使う）
   setInterval(applyTlWatch, 30000); // 実需フローの追記を定期更新
   const qUser = new URLSearchParams(location.search).get("user");
+  if (CLOUD) return; // クラウド版はウォレット機能なし（SDK はスタブ・ウォッチも不可）
   if (qUser && /^0x[0-9a-fA-F]{40}$/.test(qUser)) setUser(qUser.toLowerCase(), "watch"); // クエリ指定は保存しない（テスト用の一時表示）
   else restoreWallet(); // 前回の接続を復元（1画面⇔2画面切替・リロードで切断されないように）
 })();

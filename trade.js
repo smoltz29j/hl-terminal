@@ -35,7 +35,7 @@ function dropAgent() {
 
 function tradeReady() {
   // paper モードは接続不要（仮想口座への発注。各操作は PAPER 分岐で paper.js へ流れ /exchange は叩かない）
-  if (PAPER) return true;
+  if (PAPER) return paper.cloudReady; // クラウド版はサーバーの口座を読み終えるまで不可（LAN 版は常に true）
   return !!(trade.agent && state.user && state.userSource === "mm");
 }
 
@@ -736,7 +736,11 @@ function renderTradePane() {
   gate.hidden = false;
   const msg = $("tg-msg");
   const btn = $("tg-btn");
-  if (!state.user) {
+  if (PAPER) {
+    // クラウド版の初期ロード待ち（paperCloudLoad が完了すると renderTradePane を呼び直す）
+    msg.textContent = T("クラウドの口座を読込中…", "Loading cloud account…");
+    btn.hidden = true;
+  } else if (!state.user) {
     // 2画面時の接続ボタンは duo.html 最上段の Connect に一本化（ユーザー要望 2026-07-15。
     // ペイン内には案内文だけ残す — 接続は共有なのでどこで繋いでも両ペインに反映される）
     msg.textContent = FRAMED

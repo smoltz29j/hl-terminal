@@ -25,7 +25,14 @@ const PAPER_MAX_FILLS = 200;      // 約定履歴の保存上限
 const PAPER_MIDS_STALE_MS = 15000;
 const PAPER_KEY = `hlt-paper:acct:${NET.isMainnet ? "mainnet" : "testnet"}`;
 
-const paper = { mids: {}, midsTs: 0 };
+const paper = {
+  mids: {}, midsTs: 0,
+  // クラウド版（CLOUD）の同期状態。localStorage は常にキャッシュとして使い（paperLoad は同期関数の
+  // まま）、サーバー `/api/paper/<net>` と rev 付きで同期する。cloudReady になるまで発注は
+  // 受け付けない（tradeReady）— 初期ロード前に空口座を PUT してサーバー側を潰さないため
+  cloudReady: !CLOUD, dirty: false, syncing: null,
+};
+const PAPER_REV_KEY = PAPER_KEY + ":rev";
 
 function paperNew(cash = PAPER_INIT_CASH) {
   return {
@@ -49,7 +56,106 @@ function paperLoad() {
   return a;
 }
 
-function paperSave(a) { safeSet(PAPER_KEY, JSON.stringify(a)); }
+function paperSave(a) {
+  safeSet(PAPER_KEY, JSON.stringify(a));
+  if (CLOUD) { paper.dirty = true; paperCloudSync(); }
+}
+
+// ---------- クラウド同期（CLOUD のみ） ----------
+// 方式: localStorage = キャッシュ、サーバー = 正本。保存のたびに PUT（rev 付き楽観ロック）、
+// 5 秒ティックでは If-None-Match 付き GET（変化なしは 304）で別端末の更新を取り込む。
+// 409（rev 不一致 = 別端末が先に書いた）ならサーバー版を採用して再描画し、ローカルの変更は捨てる
+// （同一ブラウザの 2 ペインは localStorage と rev を共有するので衝突しない）
+
+const paperRev = () => Number(localStorage.getItem(PAPER_REV_KEY)) || 0;
+
+function paperAdopt(d) {
+  if (d.acct) safeSet(PAPER_KEY, JSON.stringify(d.acct));
+  safeSet(PAPER_REV_KEY, String(d.rev));
+}
+
+async function paperApi(method, body, headers = {}) {
+  const r = await fetch(`${CLOUD.api}/paper/${NET.isMainnet ? "mainnet" : "testnet"}`, {
+    method, headers: { "Content-Type": "application/json", ...headers },
+    body: body === undefined ? undefined : JSON.stringify(body),
+    signal: AbortSignal.timeout(10000),
+  });
+  if (r.status === 401) { window.top.location.href = "/login"; throw new Error("unauthorized"); }
+  return r;
+}
+
+// 起動時: サーバーの口座を読む（無ければローカル or 新規口座を初期登録）。成功するまで再試行
+async function paperCloudLoad() {
+  for (let delay = 2000; ; delay = Math.min(delay * 2, 30000)) {
+    try {
+      const r = await paperApi("GET");
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const d = await r.json();
+      if (d.acct) {
+        paperAdopt(d);
+      } else {
+        // サーバーが空（初回）: ローカルにあればそれを、無ければ新規口座を登録
+        let a = null;
+        try { a = JSON.parse(localStorage.getItem(PAPER_KEY)); } catch { /* 無視 */ }
+        if (!a || a.v !== 1) a = paperNew();
+        const p = await paperApi("PUT", { rev: d.rev, acct: a, force: true });
+        if (!p.ok) throw new Error(`HTTP ${p.status}`);
+        paperAdopt({ rev: (await p.json()).rev, acct: a });
+      }
+      paper.cloudReady = true;
+      paper.dirty = false;
+      if (typeof renderTradePane === "function") renderTradePane(); // ゲートを開く
+      if (ACCT_ON) paperRender(paperLoad());
+      return;
+    } catch (e) {
+      console.warn("paper cloud load:", e);
+      paperNotify(T("クラウド口座の読込に失敗 — 再試行中…", "Failed to load cloud account — retrying…"), "err");
+      await new Promise((res) => setTimeout(res, delay));
+    }
+  }
+}
+
+// dirty なら PUT、そうでなければ GET（他端末の更新確認）。同時実行はしない（直列化）
+function paperCloudSync() {
+  if (!CLOUD || !paper.cloudReady) return paper.syncing;
+  if (paper.syncing) return paper.syncing;
+  paper.syncing = (async () => {
+    try {
+      if (paper.dirty) {
+        let a = null;
+        try { a = JSON.parse(localStorage.getItem(PAPER_KEY)); } catch { /* 無視 */ }
+        if (!a) return;
+        paper.dirty = false;
+        const r = await paperApi("PUT", { rev: paperRev(), acct: a });
+        if (r.status === 409) {
+          paperAdopt(await r.json());
+          paperNotify(T("[Paper] 別端末の更新が先に保存されていたため、サーバーの口座を取り込みました", "[Paper] Another device saved first — reloaded the account from the server"), "err");
+          if (ACCT_ON) paperRender(paperLoad());
+        } else if (r.ok) {
+          safeSet(PAPER_REV_KEY, String((await r.json()).rev));
+        } else {
+          paper.dirty = true; // 次のティックで再送
+          throw new Error(`HTTP ${r.status}`);
+        }
+      } else {
+        const r = await paperApi("GET", undefined, { "If-None-Match": String(paperRev()) });
+        if (r.status === 304) return;
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const d = await r.json();
+        if (d.acct && d.rev !== paperRev() && !paper.dirty) {
+          paperAdopt(d);
+          if (ACCT_ON) paperRender(paperLoad());
+        }
+      }
+    } catch (e) {
+      console.warn("paper cloud sync:", e);
+    } finally {
+      paper.syncing = null;
+      if (paper.dirty) paperCloudSync(); // 同期中に新しい保存があれば続けて送る
+    }
+  })();
+  return paper.syncing;
+}
 
 // 評価用 mark。表示中の銘柄は WS の mark（最頻）、それ以外は allMids の mid
 function paperMark(coin) {
@@ -189,6 +295,10 @@ function paperSetLeverage(coin, lev) {
 // 5 秒ティック（供給役ペインのみ。app.js の refreshAccount から呼ばれる）:
 // mids 更新 → 指値の約定判定 → 清算判定 → 描画
 async function paperRefresh(force) {
+  if (CLOUD) {
+    if (!paper.cloudReady) return; // 初期ロード待ち（paperCloudLoad が完了時に描画する）
+    await paperCloudSync();        // 別端末の更新を取り込んでから約定判定する
+  }
   await paperLoadMids(force === true || Date.now() - paper.midsTs > 4000);
   const a = paperLoad();
   let changed = false;
@@ -323,6 +433,7 @@ async function paperReset() {
 
 // 起動時（app.js の boot、銘柄メタ取得後）。アカウント欄を常時表示してティックを開始
 function paperStart() {
+  if (CLOUD) paperCloudLoad(); // 両ペインとも: サーバーの口座をキャッシュへ（完了までゲート表示）
   // 未接続でも発注できるので、レバレッジ行は接続イベント待ちでなくここで初期化する（両ペイン）
   if (typeof refreshLeverage === "function") refreshLeverage();
   if (!ACCT_ON) return;

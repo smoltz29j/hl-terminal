@@ -64,7 +64,7 @@ body { display: flex; flex-direction: column; }
   font-weight: 600;
 }
 
-#split-btn, #lang-btn {
+#split-btn, #lang-btn, #logout-btn {
   background: none;
   border: 1px solid var(--hairline);
   border-radius: 6px;
@@ -74,7 +74,9 @@ body { display: flex; flex-direction: column; }
   font: inherit;
   white-space: nowrap;
 }
-#split-btn:hover, #lang-btn:hover { border-color: var(--muted); color: var(--ink-2); }
+#split-btn:hover, #lang-btn:hover, #logout-btn:hover { border-color: var(--muted); color: var(--ink-2); }
+/* クラウド版（html.cloud、paper 専用）: Connect が無いので右寄せの起点を logo に移す */
+html.cloud #topbar-acct #logo { margin-right: auto; }
 
 #intervals, #indicators { display: flex; gap: 2px; }
 #intervals button, #indicators button {
