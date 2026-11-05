@@ -7,8 +7,8 @@
 <link rel="icon" href="data:,">
 <!-- style.css を link し、#topbar / #wallet-btn / #split-btn / #settings-btn / #ticker の
      id を本体とあえて同じにして見た目を共有する（別ドキュメントなので id 重複にはならない） -->
-<link rel="stylesheet" href="style.css?v=49">
-<script src="cloud.js?v=49"></script>
+<link rel="stylesheet" href="style.css?v=50">
+<script src="cloud.js?v=50"></script>
 <script>if (window.HLT_CLOUD) document.documentElement.classList.add("cloud");</script>
 <style>
   html, body { height: 100%; }
@@ -18,8 +18,10 @@
   #logo { margin-right: auto; }
   /* 共有アカウント欄（ポジション+オープンオーダー）。左ペインの app.js が描画し、
      操作ボタン（クローズ/変更/取消）も左ペインの trade.js が処理する。
-     表示中は最低 24vh を確保して2ペイン領域を少し短くする（ユーザー要望 2026-07-15） */
-  #account:not([hidden]) { flex: 0 0 auto; min-height: 24vh; max-height: 38vh; }
+     2026-11-05 ユーザー要望「約定履歴はスクロール式に・表示領域は短め・チャートと板を長く」:
+     高さは 18〜26vh に抑え、各テーブル（Positions / Open Orders / 約定履歴）が枠内で個別にスクロール
+     （style.css の #acct-tables section）。以前は 24〜38vh で footer 全体がスクロールしていた */
+  #account:not([hidden]) { flex: 0 0 auto; min-height: 18vh; max-height: 26vh; }
 </style>
 </head>
 <body>

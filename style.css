@@ -176,8 +176,9 @@ main {
     "account side";
   min-height: 0;
 }
-/* アカウント表示中は チャート+ボリューム:ポジション = 2:1 で分割 */
-main:has(#account:not([hidden])) { grid-template-rows: 2fr 1fr; }
+/* アカウント表示中は チャート+ボリューム:ポジション = 3:1 で分割（2026-11-05 に 2:1 から変更 —
+   テーブルは枠内スクロールになったので欄を短くしてチャートを長く） */
+main:has(#account:not([hidden])) { grid-template-rows: 3fr 1fr; }
 
 #chart-pane {
   grid-area: chart;
@@ -584,7 +585,9 @@ main:has(#account:not([hidden])) { grid-template-rows: 2fr 1fr; }
   border-top: 1px solid var(--hairline);
   background: var(--surface);
   min-height: 0;
-  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 #acct-summary {
@@ -599,11 +602,20 @@ main:has(#account:not([hidden])) { grid-template-rows: 2fr 1fr; }
   display: grid;
   grid-template-columns: 3fr 2fr;
   gap: 0 24px;
-  padding: 0 14px 10px;
+  padding: 0 14px 6px;
+  flex: 1;
+  min-height: 0;
 }
+/* 各テーブルは枠内で個別にスクロール（見出し・ヘッダ行は固定）— 欄全体を短くしても履歴が追える */
+#acct-tables section { min-height: 0; overflow-y: auto; }
+#acct-tables section h2 { position: sticky; top: 0; background: var(--surface); z-index: 1; }
+#acct-tables thead th { position: sticky; top: 24px; background: var(--surface); z-index: 1; }
 #acct-tables h2 {
   margin: 0;
   padding: 8px 0 4px;
+  height: 24px;            /* 固定高（sticky な thead の top と揃える） */
+  box-sizing: border-box;
+  line-height: 12px;
   font-size: 11px;
   font-weight: 600;
   color: var(--muted);
@@ -753,7 +765,9 @@ html.framed #tg-btn { padding: 6px 0; }
      2画面ペイン（幅 800px 前後で本 media query に入るが縦は画面いっぱい）には適用しない */
   html:not(.framed) #book-pane   { flex: none; height: 745px; min-height: 0; }
   html:not(.framed) #trades-pane { flex: none; height: 575px; min-height: 0; }
-  #account { max-height: none; overflow-y: visible; }
+  #account { max-height: none; overflow: visible; display: block; }
+  #acct-tables section { overflow-y: visible; }
+  #acct-tables section h2, #acct-tables thead th { position: static; }
   #acct-summary { flex-wrap: wrap; gap: 4px 24px; }
   #acct-tables { grid-template-columns: 1fr; }
   /* テーブルは潰して折り返さず、自然幅のままセクション内で横スクロール */
