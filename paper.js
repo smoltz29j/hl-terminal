@@ -43,7 +43,7 @@ const PAPER_REV_KEY = PAPER_KEY + ":rev";
 
 function paperNew(cash = PAPER_INIT_CASH) {
   return {
-    v: 1, cash, initCash: cash, realized: 0, fees: 0, funding: 0, liquidations: 0,
+    v: 1, cash, initCash: cash, realized: 0, fees: 0, funding: 0, fundingRebuilt: true, liquidations: 0,
     positions: {},   // coin -> { szi, entryPx, openedAt, fundingAt }（szi は符号付き。fundingAt = 最後に精算した funding 時刻）
     fundings: [],    // 新しい順。{ t, coin, szi, px, rate, amt }（amt は口座への増減、正=受取）
     orders: [],      // { oid, coin, side: "B"|"A", px, sz, ro, t }
@@ -230,6 +230,62 @@ function paperApplyFill(a, { coin, isBuy, sz, px, taker, kind }) {
   return { realized, fee };
 }
 
+// funding の全履歴再構築（v48 で funding を導入する前の口座向け・一回限り）。約定履歴を時刻順に
+// 再生して銘柄ごとの建玉サイズの推移を求め、口座開設以降の毎時精算をすべて計算し直す（途中で
+// サイズが変わった時間帯・すでに閉じた建玉も含む）。約定履歴が上限で欠けている口座は復元できない
+// ので何もしない。既存の funding（導入直後に現在サイズで追い付いた暫定分）は取り消してから再計算。
+// 返り値 = 口座を変更したか（API 失敗時は未完了のまま false、次回ティックで再試行）
+async function paperRebuildFunding(a) {
+  const now = Date.now();
+  if (now - (paper.fundingChk.__rebuild || 0) < PAPER_FUNDING_RETRY_MS) return false;
+  paper.fundingChk.__rebuild = now;
+  if (a.fills.length >= PAPER_MAX_FILLS) { a.fundingRebuilt = true; return true; } // 履歴が欠けている
+  const fills = a.fills.slice().sort((x, y) => x.t - y.t);
+  const coins = new Set(fills.map((f) => f.coin));
+  for (const c of Object.keys(a.positions)) coins.add(c);
+  const result = [];
+  for (const coin of coins) {
+    const cf = fills.filter((f) => f.coin === coin);
+    if (!cf.length) continue; // 約定無しの建玉は復元不能（通常はあり得ない）
+    const t0 = cf[0].t;
+    let hist, cs;
+    try {
+      [hist, cs] = await Promise.all([
+        info({ type: "fundingHistory", coin, startTime: t0 - 3600000 }),
+        info({ type: "candleSnapshot", req: { coin, interval: "1h", startTime: t0 - 7200000, endTime: now } }),
+      ]);
+    } catch (e) { console.warn("paper funding rebuild:", e); return false; }
+    if (!Array.isArray(hist) || !Array.isArray(cs)) return false;
+    const rates = new Map(hist.map((h) => [Math.round(h.time / 3600000), { rate: Number(h.fundingRate), time: h.time }]));
+    const closes = new Map(cs.map((c) => [Math.round((Number(c.T ?? c.t + 3600000) + 1) / 3600000), Number(c.c)]));
+    const szd = state.szDecimals[coin] ?? 4;
+    let sz = 0, i = 0, last = null;
+    for (let H = (Math.floor(t0 / 3600000) + 1) * 3600000; H <= now; H += 3600000) {
+      while (i < cf.length && cf[i].t < H) { sz = Number((sz + (cf[i].side === "B" ? cf[i].sz : -cf[i].sz)).toFixed(szd)); i++; }
+      const k = Math.round(H / 3600000);
+      const r = rates.get(k);
+      if (!r) continue; // 直近の精算が API 未反映なら通常経路（paperSettleFunding）が後で拾う
+      last = r.time;
+      if (sz === 0) continue;
+      const px = closes.get(k) || paperMark(coin) || cf[i - 1]?.px || 0;
+      if (!(px > 0)) continue;
+      result.push({ t: r.time, coin, szi: sz, px, rate: r.rate, amt: -sz * px * r.rate });
+    }
+    // 現在サイズと再生結果が食い違う（履歴の欠落など）なら復元を諦める
+    const cur = a.positions[coin]?.szi ?? 0;
+    if (Math.abs(cur - sz) > Math.pow(10, -szd) / 2) { console.warn("paper funding rebuild: size mismatch", coin, cur, sz); a.fundingRebuilt = true; return true; }
+    if (a.positions[coin] && last != null) a.positions[coin].fundingAt = Math.max(last, a.positions[coin].openedAt ?? 0);
+  }
+  // 暫定分を取り消して置き換え
+  a.cash -= a.funding || 0;
+  a.funding = 0;
+  a.fundings = [];
+  for (const f of result.sort((x, y) => y.t - x.t)) { a.cash += f.amt; a.funding += f.amt; }
+  a.fundings = result.slice(0, PAPER_MAX_FUNDINGS);
+  a.fundingRebuilt = true;
+  return true;
+}
+
 // funding の精算。各建玉について fundingAt より後の毎時精算（/info fundingHistory の実値）を順に
 // 口座へ反映する。履歴が未反映（API ラグ）なら次回に持ち越し、問い合わせは銘柄ごと 1 分に 1 回。
 // 価格は直近 2 分以内の精算なら現在 mark、それ以前（オフライン中の追い付き）はその時刻の 1h 足終値。
@@ -359,7 +415,9 @@ async function paperRefresh(force) {
   }
   await paperLoadMids(force === true || Date.now() - paper.midsTs > 4000);
   const a = paperLoad();
-  let changed = await paperSettleFunding(a); // funding で口座価値が減れば下の清算判定に効く
+  let changed = false;
+  if (!a.fundingRebuilt) changed = await paperRebuildFunding(a); // 一回限り（funding 導入前の口座）
+  if (await paperSettleFunding(a)) changed = true; // funding で口座価値が減れば下の清算判定に効く
   for (const o of a.orders.slice()) {
     const mark = paperMark(o.coin);
     if (!(mark > 0)) continue;
