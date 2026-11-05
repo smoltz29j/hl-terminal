@@ -14,7 +14,11 @@
 //           必要証拠金 = 想定元本 ÷ レバレッジ、維持証拠金 = 想定元本 ÷ (2×maxLev)（HL と同じ規則）。
 //           板に残る非 Reduce-Only 注文の必要証拠金も余力から予約する
 //   清算  = 口座価値（残高+含み損益）< 維持証拠金合計 で全ポジションを mark で強制クローズ、注文全取消
-//   資金調達料（funding）は考慮しない
+//   funding = 毎時 0 分（HL と同じ）に建玉へ資金調達料を反映。料率は /info fundingHistory の実値
+//           （時間あたり率。正なら Long が払い Short が受け取る）、支払 = −szi × 価格 × 率。
+//           価格は HL ではオラクル価格だが、ここでは「その時刻の 1h 足終値」（直近 2 分以内の
+//           精算は現在 mark）で近似する。建玉中にサイズが変わった時間帯は精算時点のサイズで計算。
+//           ブラウザを閉じていた期間も次回ティックで履歴から追い付く（1 銘柄 500 時間 ≒ 20 日が上限）
 //   対象銘柄は実発注と同じ state.assetIds 登録済み銘柄（builder DEX は mids の取得経路が別のため除外）
 
 const PAPER_INIT_CASH = 100000;   // USDC
@@ -23,6 +27,8 @@ const PAPER_MAKER_FEE = 0.00015;
 const PAPER_DEFAULT_LEV = 10;     // 銘柄の maxLev がこれ未満なら maxLev
 const PAPER_MAX_FILLS = 200;      // 約定履歴の保存上限
 const PAPER_MIDS_STALE_MS = 15000;
+const PAPER_FUNDING_RETRY_MS = 60000; // funding 履歴の再取得間隔（精算直後は API 反映にラグがある）
+const PAPER_MAX_FUNDINGS = 200;       // funding 精算履歴の保存上限（約定履歴とは別枠）
 const PAPER_KEY = `hlt-paper:acct:${NET.isMainnet ? "mainnet" : "testnet"}`;
 
 const paper = {
@@ -31,13 +37,15 @@ const paper = {
   // まま）、サーバー `/api/paper/<net>` と rev 付きで同期する。cloudReady になるまで発注は
   // 受け付けない（tradeReady）— 初期ロード前に空口座を PUT してサーバー側を潰さないため
   cloudReady: !CLOUD, dirty: false, syncing: null,
+  fundingChk: {},  // coin -> 最後に fundingHistory を問い合わせた時刻（スロットリング）
 };
 const PAPER_REV_KEY = PAPER_KEY + ":rev";
 
 function paperNew(cash = PAPER_INIT_CASH) {
   return {
-    v: 1, cash, initCash: cash, realized: 0, fees: 0, liquidations: 0,
-    positions: {},   // coin -> { szi, entryPx, openedAt }（szi は符号付き）
+    v: 1, cash, initCash: cash, realized: 0, fees: 0, funding: 0, liquidations: 0,
+    positions: {},   // coin -> { szi, entryPx, openedAt, fundingAt }（szi は符号付き。fundingAt = 最後に精算した funding 時刻）
+    fundings: [],    // 新しい順。{ t, coin, szi, px, rate, amt }（amt は口座への増減、正=受取）
     orders: [],      // { oid, coin, side: "B"|"A", px, sz, ro, t }
     fills: [],       // 新しい順。{ t, coin, side, sz, px, fee, realized, kind: "market"|"limit"|"liq" }
     lev: {},         // coin -> leverage（未設定は PAPER_DEFAULT_LEV）
@@ -204,7 +212,7 @@ function paperApplyFill(a, { coin, isBuy, sz, px, taker, kind }) {
     // 新規 or 積み増し: 建値は数量加重平均
     const nsz = rnd(old + d);
     const entry = p ? (Math.abs(old) * p.entryPx + sz * px) / Math.abs(nsz) : px;
-    a.positions[coin] = { szi: nsz, entryPx: entry, openedAt: p?.openedAt ?? Date.now() };
+    a.positions[coin] = { szi: nsz, entryPx: entry, openedAt: p?.openedAt ?? Date.now(), fundingAt: p?.fundingAt ?? Date.now() };
   } else {
     // 反対売買: 既存分は実現、超過分はドテン（建値 = 約定価格）
     const closeSz = Math.min(Math.abs(old), sz);
@@ -212,7 +220,7 @@ function paperApplyFill(a, { coin, isBuy, sz, px, taker, kind }) {
     const rem = rnd(old + d);
     if (rem === 0) delete a.positions[coin];
     else if ((rem > 0) === (old > 0)) p.szi = rem;
-    else a.positions[coin] = { szi: rem, entryPx: px, openedAt: Date.now() };
+    else a.positions[coin] = { szi: rem, entryPx: px, openedAt: Date.now(), fundingAt: Date.now() };
   }
   a.cash += realized - fee;
   a.realized += realized;
@@ -220,6 +228,56 @@ function paperApplyFill(a, { coin, isBuy, sz, px, taker, kind }) {
   a.fills.unshift({ t: Date.now(), coin, side: isBuy ? "B" : "A", sz, px, fee, realized, kind });
   if (a.fills.length > PAPER_MAX_FILLS) a.fills.length = PAPER_MAX_FILLS;
   return { realized, fee };
+}
+
+// funding の精算。各建玉について fundingAt より後の毎時精算（/info fundingHistory の実値）を順に
+// 口座へ反映する。履歴が未反映（API ラグ）なら次回に持ち越し、問い合わせは銘柄ごと 1 分に 1 回。
+// 価格は直近 2 分以内の精算なら現在 mark、それ以前（オフライン中の追い付き）はその時刻の 1h 足終値。
+// 返り値 = 口座を変更したか
+async function paperSettleFunding(a) {
+  const now = Date.now();
+  let changed = false;
+  for (const [coin, p] of Object.entries(a.positions)) {
+    if (p.fundingAt == null) { p.fundingAt = p.openedAt ?? now; changed = true; }
+    const nextHour = (Math.floor(p.fundingAt / 3600000) + 1) * 3600000;
+    if (nextHour > now) continue;                                   // まだ精算時刻が来ていない
+    if (now - (paper.fundingChk[coin] || 0) < PAPER_FUNDING_RETRY_MS) continue;
+    paper.fundingChk[coin] = now;
+    let hist;
+    try {
+      hist = await info({ type: "fundingHistory", coin, startTime: p.fundingAt + 1 });
+    } catch (e) { console.warn("paper fundingHistory:", e); continue; }
+    if (!Array.isArray(hist)) continue;
+    const due = hist.filter((h) => h.time > p.fundingAt && h.time <= now).sort((x, y) => x.time - y.time);
+    if (!due.length) continue;
+    // 価格: 追い付き分は 1h 足の終値（精算時刻 = 足の終了時刻）、直近は mark
+    let closes = null;
+    if (due.some((h) => now - h.time > 120000)) {
+      try {
+        const cs = await info({ type: "candleSnapshot", req: { coin, interval: "1h", startTime: due[0].time - 7200000, endTime: now } });
+        closes = new Map(cs.map((c) => [Number(c.T ?? (c.t + 3600000)), Number(c.c)]));
+      } catch (e) { console.warn("paper funding candles:", e); }
+    }
+    const mark = paperMark(coin) || p.entryPx;
+    for (const h of due) {
+      const rate = Number(h.fundingRate);
+      // 1h 足の T は終了時刻（ミリ秒、精算時刻の直前）。±1 分以内で最も近い足を探す
+      let px = null;
+      if (closes) {
+        let best = Infinity;
+        for (const [T, c] of closes) { const d = Math.abs(T - h.time); if (d < best && d <= 60000) { best = d; px = c; } }
+      }
+      if (!(px > 0)) px = mark;
+      const amt = -p.szi * px * rate;   // 正の率 = Long が払う
+      a.cash += amt;
+      a.funding = (a.funding || 0) + amt;
+      p.fundingAt = h.time;
+      (a.fundings ||= []).unshift({ t: h.time, coin, szi: p.szi, px, rate, amt });
+      changed = true;
+    }
+    if (a.fundings.length > PAPER_MAX_FUNDINGS) a.fundings.length = PAPER_MAX_FUNDINGS;
+  }
+  return changed;
 }
 
 // 発注（trade.js の検証後に呼ばれる）。返り値 { filled: {sz, px} } | { resting: {oid} }
@@ -301,7 +359,7 @@ async function paperRefresh(force) {
   }
   await paperLoadMids(force === true || Date.now() - paper.midsTs > 4000);
   const a = paperLoad();
-  let changed = false;
+  let changed = await paperSettleFunding(a); // funding で口座価値が減れば下の清算判定に効く
   for (const o of a.orders.slice()) {
     const mark = paperMark(o.coin);
     if (!(mark > 0)) continue;
@@ -374,8 +432,8 @@ function paperRender(a) {
   // paper 固有の上書き: 総資産 tooltip・入出金ボタン → リセット・約定履歴
   const sign = (x) => (x >= 0 ? "+" : "") + fmtUsd2(x);
   acct("ac-equity").title = T(
-    `ペーパー口座。初期資金 ${fmtUsd2(a.initCash)} / 実現損益 ${sign(a.realized)} / 手数料 −${fmtUsd2(a.fees)} / 含み損益 ${sign(s.upnl)} / 清算 ${a.liquidations} 回`,
-    `Paper account. Initial ${fmtUsd2(a.initCash)} / realized ${sign(a.realized)} / fees −${fmtUsd2(a.fees)} / unrealized ${sign(s.upnl)} / liquidations ${a.liquidations}`);
+    `ペーパー口座。初期資金 ${fmtUsd2(a.initCash)} / 実現損益 ${sign(a.realized)} / 手数料 −${fmtUsd2(a.fees)} / 資金調達料 ${sign(a.funding || 0)} / 含み損益 ${sign(s.upnl)} / 清算 ${a.liquidations} 回`,
+    `Paper account. Initial ${fmtUsd2(a.initCash)} / realized ${sign(a.realized)} / fees −${fmtUsd2(a.fees)} / funding ${sign(a.funding || 0)} / unrealized ${sign(s.upnl)} / liquidations ${a.liquidations}`);
   acct("ac-avail").title = T(`余力 = 残高 ${fmtUsd2(a.cash)} + 含み損益 ${sign(s.upnl)} − 使用証拠金 ${fmtUsd2(s.marginUsed)}（指値の予約 ${fmtUsd2(s.reserved)} は発注時に別途差引）`,
     `Free = cash ${fmtUsd2(a.cash)} + unrealized ${sign(s.upnl)} − margin used ${fmtUsd2(s.marginUsed)} (resting-order reserve ${fmtUsd2(s.reserved)} is deducted at order time)`);
   const xfer = acct("acct-xfer");
@@ -390,9 +448,24 @@ function paperRender(a) {
   }
   const tb = acct("paper-fills")?.tBodies[0];
   if (tb) {
-    tb.innerHTML = a.fills.length
-      ? a.fills.slice(0, 60).map((f) => {
+    // 約定と funding 精算を時刻順に混ぜて表示（保存は別配列なので funding が約定履歴を押し出さない）
+    const rows = a.fills.concat((a.fundings || []).map((f) => ({ ...f, kind: "funding" })))
+      .sort((x, y) => y.t - x.t).slice(0, 60);
+    tb.innerHTML = rows.length
+      ? rows.map((f) => {
           const time = new Date(f.t).toLocaleString("ja-JP", { hour12: false, month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+          if (f.kind === "funding") {
+            const rateTxt = `${(f.rate * 100).toFixed(5).replace(/0+$/, "").replace(/\.$/, "")}%/h`;
+            return `<tr class="funding" title="${T(`資金調達料 ${rateTxt} × 建玉 ${fmtNum(f.szi, state.szDecimals[f.coin] ?? 4)} × ${fmtAnyPx(f.px)}`, `Funding ${rateTxt} × position ${fmtNum(f.szi, state.szDecimals[f.coin] ?? 4)} × ${fmtAnyPx(f.px)}`)}">
+            <td>${time}</td>
+            <td class="coin">${esc(f.coin)}</td>
+            <td><span class="tag">${T("資金調達", "Funding")}</span> ${rateTxt}</td>
+            <td class="${signCls(f.szi)}">${fmtNum(f.szi, state.szDecimals[f.coin] ?? 4)}</td>
+            <td>${fmtAnyPx(f.px)}</td>
+            <td>–</td>
+            <td class="${signCls(f.amt)}">${fmtUsd2(f.amt)}</td>
+          </tr>`;
+          }
           const tag = f.kind === "liq" ? ' <span class="tag">LIQ</span>' : f.kind === "limit" ? ' <span class="tag">LMT</span>' : "";
           return `<tr>
             <td>${time}</td>

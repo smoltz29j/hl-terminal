@@ -817,3 +817,6 @@ html.framed #tg-btn { padding: 6px 0; }
   #account.paper #acct-tables { grid-template-columns: 3fr 2fr 3fr; }
 }
 #paper-fills td:first-child { white-space: nowrap; }
+#paper-fills tr.funding td { color: var(--muted); white-space: nowrap; }
+#paper-fills tr.funding td.up { color: var(--buy); }
+#paper-fills tr.funding td.down { color: var(--sell); }
