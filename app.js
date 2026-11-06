@@ -52,6 +52,7 @@ const state = {
   szDecimals: {},        // coin -> size decimals
   maxLev: {},            // coin -> maxLeverage（レバレッジ変更 UI の上限）
   assetIds: {},          // coin -> asset id（meta.universe の元 index。発注に使用）
+  coinDex: {},           // coin -> 所属 DEX 名（既定 DEX は ""。paper の allMids を dex 別に取るために使う）
   pxDecimals: 1,         // decimals of the current coin's prices (derived from data)
   lastCandleT: 0,
   bookTime: 0,           // 描画済み板の time（WS と REST ポーリングの併用で古い方を捨てる）
@@ -146,6 +147,15 @@ async function info(body) {
   return r.json();
 }
 
+// プルダウン先頭に固定する主要銘柄（この順）。無い銘柄（testnet 等）は単に飛ばされる
+const MAJOR_COINS = ["BTC", "ETH", "SOL", "HYPE", "XRP", "BNB", "DOGE"];
+
+// 発注・クローズ・レバ変更の対象にできる銘柄か。実発注は asset id 登録済み（既定 DEX）のみ、
+// paper は asset id を使わないので銘柄メタ（szDecimals）さえあれば builder DEX 銘柄も可
+function canOrderCoin(coin) {
+  return PAPER ? state.szDecimals[coin] != null : state.assetIds[coin] != null;
+}
+
 async function loadCoins() {
   // 既定 DEX に加え、HIP-3 builder DEX（xyz 等。perpDexs で列挙）の銘柄もセレクタに載せる。
   // 表示名は perpConciseAnnotations の displayName（例: xyz:CL → WTIOIL）+ DEX 名で区別
@@ -170,20 +180,26 @@ async function loadCoins() {
       coins.push({
         ...u,
         ctx: ctxs[i],
-        // builder DEX の asset id は採番体系が別（100000+ 系）で未検証のため登録しない
-        // → 発注時は trade.js の「この銘柄は発注に未対応です」ガードに掛かる（誤発注防止）
+        // builder DEX の asset id は採番体系が別（100000+ 系）で実約定未確認のため登録しない
+        // → 実発注時は trade.js の「この銘柄は発注に未対応です」ガードに掛かる（誤発注防止）。
+        //   paper は asset id 不要なので builder DEX 銘柄も発注可（canOrderCoin）
         assetId: dex ? null : i,
+        dex,
         label: dex ? `${disp.get(u.name) ?? u.name.split(":")[1] ?? u.name} (${dex})` : `${u.name}-PERP`,
       });
     });
   });
-  coins.sort((a, b) => Number(b.ctx.dayNtlVlm) - Number(a.ctx.dayNtlVlm));
+  // 並び順: 主要銘柄（MAJOR_COINS の順）を先頭に、残りは表示名のアルファベット順
+  // （ユーザー指示 2026-11-07。以前は 24h 出来高順）
+  const rank = (c) => { const i = MAJOR_COINS.indexOf(c.name); return i < 0 ? MAJOR_COINS.length : i; };
+  coins.sort((a, b) => rank(a) - rank(b) || a.label.localeCompare(b.label, "en", { sensitivity: "base" }));
 
   state.coinList = [];
   state.coinLabels = {};
   for (const c of coins) {
     state.szDecimals[c.name] = c.szDecimals;
     state.maxLev[c.name] = c.maxLeverage;
+    state.coinDex[c.name] = c.dex;
     if (c.assetId != null) state.assetIds[c.name] = c.assetId;
     state.coinLabels[c.name] = c.label;
     state.coinList.push(c.name);
@@ -1607,7 +1623,7 @@ function renderAccount(ch, orders, spotEq, stakeVal, vaultVal, staking, hypePx) 
         const sz = Number(p.szi);
         const mark = Math.abs(sz) > 0 ? Number(p.positionValue) / Math.abs(sz) : 0;
         const roe = (Number(p.returnOnEquity) * 100).toFixed(1);
-        const close = canTrade && p.coin in state.assetIds
+        const close = canTrade && canOrderCoin(p.coin)
           ? `<button class="close-pos" data-coin="${esc(p.coin)}" title="${T("成行でクローズ（Reduce Only）", "Market close (reduce only)")}">${T("クローズ", "Close")}</button>` : "";
         return `<tr>
           <td class="coin">${esc(p.coin)} <span class="tag">${Number(p.leverage.value)}x</span></td>
@@ -1630,7 +1646,7 @@ function renderAccount(ch, orders, spotEq, stakeVal, vaultVal, staking, hypePx) 
           const side = o.side === "B" ? "buy" : "sell";
           const time = new Date(o.timestamp).toLocaleTimeString("ja-JP", { hour12: false });
           const actions = [];
-          if (canTrade && o.coin in state.assetIds) {
+          if (canTrade && canOrderCoin(o.coin)) {
             // 修正は通常の指値のみ（trigger/TPSL は未対応）
             if (!o.isTrigger && o.orderType === "Limit" && ["Gtc", "Alo", "Ioc"].includes(o.tif)) {
               actions.push(`<button class="mod" data-oid="${Number(o.oid)}" title="${T("注文修正（価格・数量）", "Modify order (price/size)")}">${T("変更", "Edit")}</button>`);
@@ -1842,6 +1858,9 @@ async function switchTo(coin, interval) {
   if (FRAMED) safeSet(`hlt-coin:p${PANE}`, coin);
   $("asks").innerHTML = $("bids").innerHTML = $("trades").innerHTML = "";
   state.bookTime = 0; // 銘柄が変わるので板の鮮度ガードをリセット
+  // 旧銘柄の mark を持ち越さない（新銘柄の activeAssetCtx が届くまで成行は「mark 未取得」で止まる。
+  // 持ち越すと paper の成行が旧銘柄の価格で約定し、実発注も旧価格基準の IOC になる — 2026-11-07 E2E で発見）
+  if (coinChanged) state.markPx = 0;
   try {
     await loadCandles();
   } catch (e) {
@@ -1865,7 +1884,7 @@ async function switchTo(coin, interval) {
   const filterEl = $("coin-filter");
   const sel = $("coin-select");
 
-  // 前方一致を優先し、次いで部分一致（各グループ内は出来高順のまま）。
+  // 前方一致を優先し、次いで部分一致（各グループ内は coinList の順 = 主要銘柄→アルファベット順のまま）。
   // API 名（"xyz:CL" とその ":" 以降）と表示名（"WTIOIL"）の両方を一致対象にする。
   // 部分一致は名前のみ（"-PERP" や "(xyz)" を含めると全銘柄が一致してしまう）
   function matches(q) {

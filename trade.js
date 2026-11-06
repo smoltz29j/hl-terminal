@@ -141,7 +141,7 @@ async function submitOrder() {
   const szd = state.szDecimals[coin];
   const isBuy = trade.side === "buy";
   try {
-    if (asset == null) throw new Error(T("この銘柄は発注に未対応です", "Ordering is not supported for this symbol"));
+    if (!canOrderCoin(coin)) throw new Error(T("この銘柄は発注に未対応です", "Ordering is not supported for this symbol"));
     // szDecimals 未取得のまま 0 桁に丸めると数量が整数へ潰れる（誤サイズ発注）— 必ず止める
     if (szd == null) throw new Error(T("銘柄情報が未取得です。少し待って再試行してください", "Symbol metadata not loaded yet. Retry in a moment"));
     const sz = Number(parsePositive($("tf-sz").value, T("数量", "size")).toFixed(szd));
@@ -297,7 +297,7 @@ async function closePosition(coin) {
     const isBuy = szi < 0; // ショートは買い戻し、ロングは売り
     const maxSz = Math.abs(szi);
     const asset = state.assetIds[coin];
-    if (asset == null) throw new Error(T("この銘柄はクローズ操作に未対応です", "Closing is not supported for this symbol"));
+    if (!canOrderCoin(coin)) throw new Error(T("この銘柄はクローズ操作に未対応です", "Closing is not supported for this symbol"));
     const szd = state.szDecimals[coin];
     if (szd == null) throw new Error(T("銘柄情報が未取得です。少し待って再試行してください", "Symbol metadata not loaded yet. Retry in a moment"));
 
@@ -366,12 +366,11 @@ async function closePosition(coin) {
 // ---------- レバレッジ変更（updateLeverage） ----------
 
 // 現在値を activeAssetData から取得して UI へ反映。銘柄切替・接続直後に呼ぶ。
-// 非対応銘柄（builder DEX 等 asset id 未登録）では行ごと隠す
+// 非対応銘柄（実発注で builder DEX 等 asset id 未登録。paper は全銘柄可）では行ごと隠す
 async function refreshLeverage() {
   const row = $("tf-lev-row");
   const coin = state.coin;
-  const asset = state.assetIds[coin];
-  if (!tradeReady() || asset == null) { row.hidden = true; return; }
+  if (!tradeReady() || !canOrderCoin(coin)) { row.hidden = true; return; }
   row.hidden = false;
   $("tf-lev-max").textContent = T(`x（最大 ${state.maxLev[coin] ?? "?"}）`, `x (max ${state.maxLev[coin] ?? "?"})`);
   if (PAPER) {
@@ -403,7 +402,7 @@ async function setLeverage() {
   const asset = state.assetIds[coin];
   const btn = $("tf-lev-set");
   try {
-    if (asset == null) throw new Error(T("この銘柄はレバレッジ変更に未対応です", "Leverage change is not supported for this symbol"));
+    if (!canOrderCoin(coin)) throw new Error(T("この銘柄はレバレッジ変更に未対応です", "Leverage change is not supported for this symbol"));
     const max = state.maxLev[coin] ?? 1;
     const lev = Math.round(parsePositive($("tf-lev").value, T("レバレッジ", "leverage")));
     if (lev < 1 || lev > max) throw new Error(T(`レバレッジは 1〜${max} の整数で指定してください`, `Leverage must be an integer between 1 and ${max}`));

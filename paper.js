@@ -19,7 +19,9 @@
 //           価格は HL ではオラクル価格だが、ここでは「その時刻の 1h 足終値」（直近 2 分以内の
 //           精算は現在 mark）で近似する。建玉中にサイズが変わった時間帯は精算時点のサイズで計算。
 //           ブラウザを閉じていた期間も次回ティックで履歴から追い付く（1 銘柄 500 時間 ≒ 20 日が上限）
-//   対象銘柄は実発注と同じ state.assetIds 登録済み銘柄（builder DEX は mids の取得経路が別のため除外）
+//   対象銘柄は銘柄メタ（szDecimals）のある全銘柄 = HIP-3 builder DEX（xyz: 等）も可（2026-11-07。
+//   asset id を使わないため。mids は dex 別の allMids を建玉/注文/表示銘柄のある DEX だけ追加取得、
+//   fundingHistory / candleSnapshot は "xyz:CL" 形式の coin 名でそのまま取れることを実測済み）
 
 const PAPER_INIT_CASH = 100000;   // USDC
 const PAPER_TAKER_FEE = 0.00045;  // HL 基本ティア
@@ -171,10 +173,27 @@ function paperMark(coin) {
   return Number(paper.mids[coin]) || 0;
 }
 
+// allMids は dex 単位（既定 DEX の応答に builder DEX 銘柄は含まれない — 2026-11-07 実測）。
+// 建玉・注文・表示中銘柄が属する builder DEX の分だけ追加で取得し、1 つの辞書に統合する
+// （キーは "xyz:CL" 形式でそのまま重ならない）。各 allMids は weight 2
+function paperMidDexes(a) {
+  const dexes = new Set([""]);
+  const add = (coin) => { const d = state.coinDex[coin]; if (d) dexes.add(d); };
+  for (const coin of Object.keys(a.positions)) add(coin);
+  for (const o of a.orders) add(o.coin);
+  add(state.coin);
+  return [...dexes];
+}
+
 async function paperLoadMids(force) {
-  if (!force && Date.now() - paper.midsTs < PAPER_MIDS_STALE_MS) return;
+  const dexes = paperMidDexes(paperLoad());
+  // 前回取得に無い DEX が必要になった（builder DEX 銘柄へ切替直後など）ら鮮度に関わらず取り直す
+  const missing = dexes.some((d) => !(paper.midDexes || []).includes(d));
+  if (!force && !missing && Date.now() - paper.midsTs < PAPER_MIDS_STALE_MS) return;
   try {
-    paper.mids = await info({ type: "allMids" });
+    const parts = await Promise.all(dexes.map((dex) => info(dex ? { type: "allMids", dex } : { type: "allMids" })));
+    paper.mids = Object.assign({}, ...parts);
+    paper.midDexes = dexes;
     paper.midsTs = Date.now();
   } catch (e) { console.warn("paper allMids:", e); } // 前回値で継続
 }
