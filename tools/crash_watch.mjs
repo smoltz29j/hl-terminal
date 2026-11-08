@@ -11,7 +11,7 @@
 //
 // TL ロジックは app.js から実行時に抜き出して評価する（二重実装を避け、
 // app.js 側のチューニングに自動追従する）。判定は日足・公式 mainnet API。
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, statSync, renameSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -235,6 +235,12 @@ console.log(JSON.stringify(verdict));
 
 if (!PEEK) {
   writeFileSync(STATE_FILE, JSON.stringify({ ...verdict, changed: undefined }));
+  // ログ（cron が >> で追記）が 5MB 超なら .1 へ退避（1 世代・既存 .1 は上書き）。
+  // 今回の出力は開いたままの fd 経由で退避後の .1 に入る（欠落しない）。
+  try {
+    const LOG = join(DIR, "crash_watch.log");
+    if (statSync(LOG).size > 5 * 1024 * 1024) renameSync(LOG, LOG + ".1");
+  } catch { /* ログ無し（手動実行等）は無視 */ }
   if (NOTIFY && (changed || fakeout)) {
     const head = fakeout ? "HL: 破断→回復 — 騙しだった可能性"
       : level >= 3 ? "🚨 HL 急落警報 Lv3" : level >= 2 ? "⚠ HL 急落警戒 Lv2" : "HL 監視状態変化";
