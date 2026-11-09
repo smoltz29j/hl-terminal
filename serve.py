@@ -21,16 +21,22 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def __init__(self, *a, **kw):
         super().__init__(*a, directory=ROOT, **kw)
 
-    # 配信していいのは静的アセットだけ。ドットパス（.git 等）と certs/ の
-    # rootCA.pem 以外（= TLS 秘密鍵 key.pem を含む）は 403 で遮断する
+    # 配信するのはホワイトリストのファイルだけ（cloud/server.py の STATIC と同じ考え方）。
+    # 2026-11-10 総点検: 以前は「ドットパスと certs/ 以外は全部配信」だったため、プロジェクト直下の
+    # hl-paper-password.txt（クラウド版の平文パスワード）・CLAUDE.md・tools/ のログ・cloud/server.py・
+    # 写真などが LAN/VPN の誰からでも無認証で取得できた。フロントが読むファイルを増やしたら
+    # ALLOWED に足すこと（足し忘れると 403 になる）。
+    ALLOWED = {
+        "index.html", "duo.html", "style.css", "cloud.js", "app.js", "hl-sign.js",
+        "paper.js", "trade.js", "metamask-sdk.bundle.js",
+        "certs/rootCA.pem",  # ローカル CA の公開証明書（端末への導入用）。key.pem は決して出さない
+    }
+
     def _forbidden(self):
-        rel = os.path.relpath(self.translate_path(self.path), ROOT)
-        parts = rel.split(os.sep)
-        if any(p.startswith(".") for p in parts if p != "."):  # "." はルート自身
-            return True
-        if parts[0] == "certs" and parts[-1] != "rootCA.pem":
-            return True
-        return False
+        rel = os.path.relpath(self.translate_path(self.path), ROOT).replace(os.sep, "/")
+        if rel == ".":  # ルート = index.html（SimpleHTTPRequestHandler が解決する）
+            return False
+        return rel not in self.ALLOWED
 
     def send_head(self):
         if self._forbidden():

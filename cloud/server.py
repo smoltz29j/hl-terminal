@@ -31,6 +31,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -127,7 +128,11 @@ def token_user(tok: str | None) -> str | None:
     if not tok:
         return None
     try:
-        exp, user, nonce, sig = base64.urlsafe_b64decode(tok.encode()).decode().split(".")
+        # ユーザー名は "." を含みうる（USER_RE）ので、先頭の期限と末尾の nonce・sig だけを切り出す
+        # （単純な split(".") だと "a.b" のようなユーザーはログイン直後から常に未認証になる）
+        exp, rest = base64.urlsafe_b64decode(tok.encode()).decode().split(".", 1)
+        user, nonce, sig = rest.rsplit(".", 2)
+        int(exp)
     except Exception:
         return None
     body = f"{exp}.{user}.{nonce}"
@@ -294,7 +299,9 @@ def write_paper(user: str, net: str, d: dict):
     tmp = p.with_suffix(".tmp")
     tmp.write_text(json.dumps(d, separators=(",", ":")))
     if p.exists():
-        p.replace(p.with_suffix(".prev.json"))  # 直前版を 1 世代だけ残す
+        # 直前版を 1 世代だけ残す。rename ではなくコピーにして、本体が存在しない瞬間を作らない
+        # （その瞬間に落ちると read_paper が「口座なし」を返し、フロントが新規口座で上書きする）
+        shutil.copy2(p, p.with_suffix(".prev.json"))
     tmp.replace(p)
 
 
