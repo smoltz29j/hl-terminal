@@ -8,3 +8,4 @@
   - `serve.py` をホワイトリスト配信に変更。それまで `https://192.168.101.201:8010/hl-paper-password.txt`（クラウド版の平文パスワード）や CLAUDE.md・tools/・cloud/server.py が LAN/VPN から無認証で取れた。**稼働中の hl-terminal.service は未再起動 = 露出は再起動まで続く**（`systemctl --user restart hl-terminal`）。再起動後にクラウド版パスワードの変更を推奨。
   - `cloud/server.py`: (1) ユーザー名に "." を含むとセッショントークンの分解に失敗し、ログインできても常に未認証になるバグを修正。(2) 口座 JSON の直前版退避を rename → copy に変更（本体が存在しない瞬間を無くす）。**VPS へは未デプロイ**（`./deploy_takerflow.sh` は T の判断で）。ローカルで tmp の HLT_DATA を使い確認済み。
   - `metamask-sdk.bundle.js` は `.sdk-build/node_modules`（lockfile: 154 パッケージ全て registry.npmjs.org・integrity 付き）から esbuild で再生成したものと sha256 一致（bde7612c…）を確認。
+- 2026-11-13 Weiss が適用: crash_watch.mjs が状態変化/騙し時に `tools/crash_watch_alert.txt`（git 外）へ 1 行追記（`時刻<TAB>Lv<TAB>text`）。無効化は cron コマンドに `--no-alert`、`--peek` では書かない。**Weiss 側にこのファイルを拾う処理は未実装**（chief-of-staff 未変更・要判断）。検証は `--peek` と `node --check` のみ。

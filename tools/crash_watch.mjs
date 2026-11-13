@@ -11,7 +11,7 @@
 //
 // TL ロジックは app.js から実行時に抜き出して評価する（二重実装を避け、
 // app.js 側のチューニングに自動追従する）。判定は日足・公式 mainnet API。
-import { readFileSync, writeFileSync, existsSync, statSync, renameSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, statSync, renameSync, appendFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -21,6 +21,9 @@ const APP_JS = join(DIR, "..", "app.js");
 const STATE_FILE = join(DIR, "crash_watch_state.json");
 const PEEK = process.argv.includes("--peek");
 const NOTIFY = process.argv.includes("--notify"); // デスクトップ通知はオプトイン（2026-08-29）
+// 状態変化時に tools/crash_watch_alert.txt へ 1 行追記（Weiss 等の拾い待ち用ファイル。--no-alert で無効）
+const ALERT = !process.argv.includes("--no-alert");
+const ALERT_FILE = join(DIR, "crash_watch_alert.txt");
 
 // ---- app.js から auto trend channels 一式を抽出 ----
 const app = readFileSync(APP_JS, "utf8");
@@ -241,6 +244,12 @@ if (!PEEK) {
     const LOG = join(DIR, "crash_watch.log");
     if (statSync(LOG).size > 5 * 1024 * 1024) renameSync(LOG, LOG + ".1");
   } catch { /* ログ無し（手動実行等）は無視 */ }
+  if (ALERT && (changed || fakeout)) {
+    try {
+      const tag = fakeout ? "FAKEOUT" : `Lv${level}`;
+      appendFileSync(ALERT_FILE, `${verdict.t}\t${tag}\t${text.replace(/\s+/g, " ")}\n`);
+    } catch { /* 書けなくても判定・ログは残す */ }
+  }
   if (NOTIFY && (changed || fakeout)) {
     const head = fakeout ? "HL: 破断→回復 — 騙しだった可能性"
       : level >= 3 ? "🚨 HL 急落警報 Lv3" : level >= 2 ? "⚠ HL 急落警戒 Lv2" : "HL 監視状態変化";
