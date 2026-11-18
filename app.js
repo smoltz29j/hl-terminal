@@ -1284,7 +1284,7 @@ const TICKER_DEX = "xyz";
 const TICKER_COINS = [
   { coin: "xyz:CL", label: "WTIOIL" },
   { coin: "xyz:GOLD", label: "GOLD" },
-  { coin: "xyz:XYZ100", label: "Nasdaq100" }, // 公式表示名は XYZ100（annotations keywords: nasdaq/qqq）だがユーザー指定の呼称で表示
+  { coin: "xyz:NVDA", label: "NVDA" }, // 2026-11-18 ユーザー指示で Nasdaq100（xyz:XYZ100）と入れ替え
   { coin: "xyz:MU", label: "MU" },
   { coin: "xyz:SPCX", label: "SPCX" },
 ];
